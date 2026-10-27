@@ -14,7 +14,7 @@
 
 [Visão geral](#-visão-geral) · [Funcionalidades](#-funcionalidades) · [Arquitetura](#-arquitetura) · [Instalação](#-começando) · [API](#-api) · [Roadmap](#-roadmap)
 
-<sub>🌐 [English](README.md) · Português (Brasil)</sub>
+<sub>🌐 [English](README-EN.md) · Português (Brasil)</sub>
 
 </div>
 

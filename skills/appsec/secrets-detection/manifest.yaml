@@ -1,0 +1,22 @@
+id: appsec.secrets-detection
+name: Detecção inicial de possíveis segredos
+version: 0.2.0
+category: appsec
+mode: deterministic
+authority_level: A
+status: enabled
+supported_languages:
+  - Python
+  - text-config
+inputs:
+  - eligible_text_content
+  - source_path
+  - commit_sha
+output_schema: finding-v1
+side_effects: none
+limitations:
+  - Pattern-based detection; false positives and false negatives are expected.
+  - The target credential is never validated or used.
+  - Redaction protects only patterns supported by the current implementation.
+  - Provider token formats and URL user-info are pattern-matched; placeholder examples may be excluded.
+  - Quoted JSON property names are supported for common credential key names.

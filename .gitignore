@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local data and secrets
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite*
+/data/
+**/data/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Logs and private key material
+*.log
+*.pem
+*.key
+*.p12
+*.pfx

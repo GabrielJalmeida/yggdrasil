@@ -1,0 +1,33 @@
+{
+  "name": "yggdrasil-web",
+  "private": true,
+  "version": "0.7.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "lint": "eslint .",
+    "test:layout": "node scripts/test-graph-layout.mjs"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.8.4",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.48.0",
+    "vite": "^7.1.12"
+  }
+}

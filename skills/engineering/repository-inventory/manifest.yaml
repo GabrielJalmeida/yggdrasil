@@ -1,0 +1,17 @@
+id: engineering.test-inventory
+name: Inventário de arquivos de teste Python
+version: 0.1.0
+category: engineering
+mode: deterministic
+authority_level: A
+status: enabled
+supported_languages:
+  - Python
+inputs:
+  - eligible_file_inventory
+output_schema: finding-v1
+side_effects: none
+limitations:
+  - Does not measure test coverage.
+  - Does not execute tests.
+  - Recognizes simple file naming/location conventions only.

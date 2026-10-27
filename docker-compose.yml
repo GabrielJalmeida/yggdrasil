@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: yggdrasil
+      POSTGRES_USER: yggdrasil
+      POSTGRES_PASSWORD: yggdrasil_dev_only
+    volumes:
+      - yggdrasil_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yggdrasil -d yggdrasil"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./services/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://yggdrasil:yggdrasil_dev_only@db:5432/yggdrasil
+      FRONTEND_ORIGINS: http://localhost:5173
+      MAX_ARCHIVE_BYTES: 20971520
+      MAX_FILES: 1000
+      MAX_TREE_DIRECTORIES: 2000
+      MAX_FILE_BYTES: 262144
+      MAX_TOTAL_TEXT_BYTES: 8388608
+      MAX_TOTAL_UNPACKED_BYTES: 52428800
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-90}
+      AI_REASONING_EFFORT: ${AI_REASONING_EFFORT:-low}
+      AI_MAX_CONTEXT_CHARS: ${AI_MAX_CONTEXT_CHARS:-14000}
+      AI_MAX_EVIDENCE_ITEMS: ${AI_MAX_EVIDENCE_ITEMS:-8}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:80"
+    restart: unless-stopped
+
+volumes:
+  yggdrasil_postgres:

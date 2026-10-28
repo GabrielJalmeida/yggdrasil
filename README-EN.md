@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.svg" alt="Yggdrasil — Code Knowledge Map. Understand software through evidence, not guesswork." width="100%">
+<img src="docs/assets/banner.png" alt="Yggdrasil — Code Knowledge Map. Understand software through evidence, not guesswork." width="100%">
 
 # Yggdrasil
 
@@ -414,6 +414,10 @@ Created by **[GabrielJalmeida](https://github.com/GabrielJalmeida)**.
 <div align="center">
 
 **Map before guessing. Evidence before conclusions.**
+
+<div align="center">
+  <img src="docs/assets/yggdrasil-icon.png" alt="Yggdrasil pixel-art logo: a tree shaped like a brain with connected neural roots" width="144">
+</div>
 
 If Yggdrasil is useful to you, consider giving the repository a ⭐.
 

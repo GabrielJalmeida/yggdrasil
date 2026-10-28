@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/banner.svg" alt="Yggdrasil — mapa de conhecimento de código. Entenda software por evidências, não por palpites." width="100%">
+<img src="docs/assets/banner.png" alt="Yggdrasil — mapa de conhecimento de código. Entenda software por evidências, não por palpites." width="100%">
 
 # Yggdrasil
 
@@ -414,6 +414,10 @@ Criado por **[GabrielJalmeida](https://github.com/GabrielJalmeida)**.
 <div align="center">
 
 **Mapa antes do palpite. Evidência antes da conclusão.**
+
+<div align="center">
+  <img src="docs/assets/yggdrasil-icon.png" alt="Logo pixel art do Yggdrasil: árvore em forma de cérebro com raízes neurais conectadas" width="144">
+</div>
 
 Se o Yggdrasil for útil para você, considere deixar uma ⭐ no repositório.
 

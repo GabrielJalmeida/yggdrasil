@@ -12,7 +12,7 @@
 ![React](https://img.shields.io/badge/React-19-149ECA?style=for-the-badge&logo=react&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-58d6a7?style=for-the-badge)
 
-[Overview](#-overview) · [Features](#-features) · [Architecture](#-architecture) · [Getting started](#-getting-started) · [API](#-api) · [Roadmap](#-roadmap)
+[Overview](#-overview) · [Features](#-features) · [Architecture](#-architecture) · [Getting started](#-getting-started) · [Tests](#-tests-and-validation) · [API](#-api) · [Roadmap](#-roadmap)
 
 🌐 [Português (Brasil)](README.md) · English
 
@@ -52,7 +52,7 @@ The graph is central to the experience: users can navigate the structure and rel
 - 🧭 **Human review of findings** — records confirmation, false positives, accepted risk, non-reproducibility, or a fix in another revision.
 - ⚙️ **SQLite by default** — starts without a database server; PostgreSQL is also supported.
 - 📏 **Offline RAG retrieval evaluation** — includes a labelled corpus and Hit@k, Recall@k, MRR, and intent metrics, without provider calls during retrieval evaluation.
-- 🖥️ **Experimental Windows desktop package** — includes a PyInstaller-packaged launcher; clean-machine acceptance and the package's AI flow still need further validation.
+- 🖥️ **Experimental Windows desktop app** — includes a PyInstaller-packaged launcher, local AI configuration, and SQLite persistence. The local build from 2026-10-27 at 23:40 was selected after manual testing: it starts quickly, lets the user configure an API, and use the chatbot. Some UI/UX bugs remain, and clean-Windows acceptance is pending; the official release has not been published yet.
 
 ## 🧰 Tech stack
 
@@ -175,7 +175,11 @@ The build script prepares the frontend, runs local checks, packages the launcher
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\desktop\build-windows.ps1"
 ```
 
-To test an extracted package, run `desktop\test-windows-package.ps1` and pass the package directory through `-PackageDirectory`. The local smoke test checked startup, UI, local session token, health check, and SQLite persistence. **The package has not yet passed acceptance on a clean machine without Python, Node.js, and Docker; its AI flow also needs end-to-end validation.**
+To test an extracted package, run `desktop\test-windows-package.ps1` and pass the package directory through `-PackageDirectory`. The automated local smoke test checked startup, UI, local session token, health check, SQLite creation, and persistence across a second launch.
+
+**Manually selected candidate:** the executable built on 2026-10-27 at 23:40 was launched on the development Windows machine; configuring the API and using the chatbot were exercised and worked better than in the earlier build. Some UI/UX bugs still need to be documented and reviewed. The package has not been accepted on a clean Windows machine without Python, Node.js, and Docker.
+
+The planned distribution method is a ZIP attached to a **GitHub Release**, separate from the source repository—not a binary committed to Git. Before publishing, confirm the exact ZIP path/name for the selected build, calculate its SHA-256, and complete clean-machine acceptance. The locally tested candidate is not yet an official published release.
 
 ## 🔧 Configuration
 
@@ -258,29 +262,44 @@ The API prefix is `/api/v1`. Interactive OpenAPI documentation is available at <
 
 ## 🧪 Tests and validation
 
-**Latest local validation recorded on Windows 11:**
+### Clean-clone validation — 2026-10-28
 
-- Backend: **101 tests passed**; `compileall` and Ruff passed.
-- Frontend: `npm ci`, ESLint, TypeScript type-check, and Vite production build passed.
-- Graph layout: 420 synthetic nodes tested without overlaps; overview mode displayed 180 nodes and filtered module views displayed 20.
-- Desktop configuration tests: 3 passed.
-- Windows desktop package: PyInstaller build completed, ZIP generated, and SHA-256 verified.
-- Package smoke test: first launch, UI, local session token, health check, SQLite creation, and persistence across a second launch passed (exit code 0).
-- Offline deterministic-skills benchmark: 6/6 cases passed, score 1.0, with zero provider calls. This measures defined skill contracts, not the target repository's absolute security.
-- A manual AI query about the Yggdrasil repository returned an evidence-backed answer with citations. This does not establish semantic correctness for every possible answer.
-- **Open items:** clean-machine acceptance has not been completed; the desktop package's AI flow showed a local session authorization error during manual testing and remains pending end-to-end validation/correction.
+Branch `test/env-file-detection`, commit `3d07627`, was cloned into a separate Windows directory and tested without reusing the Python environment from the development repository. This validates that commit; it does not mean the commit has been merged into `main`, that CI passed, or that the desktop package has passed clean-machine acceptance.
 
-These are local development checks, not a claim that CI or clean-machine release acceptance has passed.
+- **Backend:** the full `python -m pytest -q` suite passed with no failures in the clone. Pytest reported a `StarletteDeprecationWarning` about using `httpx` with `starlette.testclient`; it did not block the tests.
+- **Frontend installation:** `npm.cmd ci` installed dependencies and npm reported zero vulnerabilities in its audit. Warnings noted a deprecated ESLint version and an `esbuild` install script blocked by the local npm script policy; the checks below still passed.
+- **ESLint:** `npm.cmd run lint` passed.
+- **Production build:** `npm.cmd run build` passed, including `tsc -b` and Vite.
+- **Graph layout:** `npm.cmd run test:layout` passed: 420 nodes, no overlaps; overview contained 180 nodes and filtered module views contained 20.
+- **Offline skills benchmark:** 6/6 cases passed, `quality_score=1.0`, `provider_calls=0`. This validates the deterministic contracts represented in the corpus, not the absolute security of a target repository.
+- **Real RAG retrieval evaluation:** on `kinegratii/borax` snapshot `01cbbbf7ce33ee22d23c462c525d07e1320e67a7`, 6 of 7 cases were scored; `intent_accuracy=1.0`, `MRR=0.7833`, `Hit@1=0.6667`, `Hit@3=0.8333`, `Hit@5=1.0`, `Recall@1=0.5`, `Recall@3=0.75`, and `Recall@5=1.0`. Compared with the baseline on the same snapshot, MRR improved from `0.7208` to `0.7833`, Hit@3 from `0.6667` to `0.8333`, Hit@5 from `0.8333` to `1.0`, and Recall@5 from `0.75` to `1.0`. The case asking whether static analysis proves the absence of vulnerabilities is not scored for retrieval, because that requires semantic evaluation of a generated answer.
+- **Answer-quality corpus:** `python scripts/evaluate_answers.py --latest` passed in simulation mode, validating the corpus and expected snapshot and reporting four questions that would be run. No question was sent to AI; this is not a semantic evaluation of model-generated answers.
+- **Desktop:** the local smoke test checked startup, UI, local session token, health check, and SQLite persistence. The executable built on 2026-10-27 at 23:40 was selected by the user after launching it, configuring the API, and exercising the chatbot on the development machine. UI/UX bugs remain; clean-Windows acceptance and identification of the exact ZIP/SHA-256 for the release are pending.
+
+These results apply to the stated commit/snapshot. They do not mean CI passed or that the desktop app was accepted on a clean machine.
+
+To repeat the code validation from a separate clone while the test branch remains available:
+
+```powershell
+git clone --branch test/env-file-detection --single-branch https://github.com/GabrielJalmeida/yggdrasil.git ..\yggdrasil-clean-check
+```
+
+Then enter the cloned directory and follow the commands below. The recorded test clone used commit `3d07627`.
 
 ### Run backend tests
 
-From the repository root:
+From the repository root, in PowerShell:
 
 ```powershell
 cd services/api
-python -m pip install -e ".[dev]"
-python -m pytest -q
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts/evaluate_skills.py
 ```
+
+The virtual environment isolates dependencies. These commands invoke its Python executable directly, without relying on environment activation.
 
 ### Run frontend checks
 
@@ -292,16 +311,31 @@ npm run build
 npm run test:layout
 ```
 
+If PowerShell blocks `npm.ps1` with an execution-policy error, use the `npm.cmd` wrappers (for example, `npm.cmd ci` and `npm.cmd run build`) instead of weakening the Windows execution policy.
+
 ### Offline RAG retrieval evaluation
 
-The project includes a labelled corpus for `kinegratii/borax` and a local harness that measures retrieval of expected files. It does not by itself measure the semantic correctness of AI-generated answers or validate abstention.
+The evaluation requires a completed analysis for the repository declared by the corpus, persisted in the **same database** used by the script. Start the API/web app, analyze `https://github.com/kinegratii/borax` at reference `master`, and wait for completion. Then, from `services/api`, run:
 
 ```powershell
-cd services/api
-python scripts/evaluate_rag.py --analysis-id "ANALYSIS_ID" --cases evaluation/corpora/borax.json --output .\data\rag-evaluation-borax.json
+python scripts/evaluate_rag.py --latest --cases evaluation/corpora/borax.json
 ```
 
-Analyze the corpus repository in the UI before running the evaluator. Use the ID of a completed analysis and the same database configured for the API. Labelled paths missing from the snapshot or not read are excluded from metrics, and the report records the commit SHA. See [`docs/RAG-EVALUATION.md`](docs/RAG-EVALUATION.md) for details.
+`--latest` selects the most recent completed analysis for that repository, not the latest analysis of any repository. To save a report:
+
+```powershell
+python scripts/evaluate_rag.py --latest --cases evaluation/corpora/borax.json --output .\data\rag-evaluation-borax.json
+```
+
+The report records the analyzed SHA, metrics, and invalid/missing annotations. These metrics measure retrieval, not the semantic correctness of answers. See [`docs/RAG-EVALUATION.md`](docs/RAG-EVALUATION.md).
+
+### Validate the answer-quality corpus without AI
+
+```powershell
+python scripts/evaluate_answers.py --latest
+```
+
+Without `--run-provider`, this command is only a simulation: it validates the corpus and checks that the persisted analysis matches the expected snapshot, but it does not generate or judge answers. Adding `--run-provider` sends real questions to the configured model and may consume quota or incur cost; use it only intentionally.
 
 ## 🛡️ Security, privacy, and boundaries
 
@@ -346,10 +380,12 @@ yggdrasil/
 - [x] Progress events and Markdown report export.
 - [x] SQLite default with PostgreSQL support.
 - [x] Initial offline retrieval-evaluation harness and versioned corpus.
-- [x] Experimental Windows desktop package and basic local smoke test.
+- [x] Experimental Windows desktop package, local smoke test, and manual API/chatbot configuration flow exercised on the selected build.
+- [x] Validate the backend suite, frontend lint/build, graph layout, offline skills benchmark, and RAG evaluation in a clean clone of commit `3d07627`.
+- [ ] Fix/document remaining desktop UI/UX bugs.
+- [ ] Test the selected ZIP on clean Windows, identify the exact artifact, calculate SHA-256, and publish a GitHub Release separate from source code.
+- [ ] Run real AI answer evaluations with human review; `evaluate_answers.py --latest` simulation does not measure semantic correctness.
 - [ ] Validate clean installation, build, and frontend lint in CI.
-- [ ] Expand evaluation of semantic answer quality and abstention.
-- [ ] Complete end-to-end AI validation in the desktop package and test on clean Windows.
 - [ ] Improve graph navigation and large-result pagination based on observed use.
 - [ ] Consider a second language and semantic retrieval only if evaluation demonstrates value.
 - [ ] Explore snapshot comparison and incremental re-analysis.

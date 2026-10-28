@@ -12,7 +12,7 @@
 ![React](https://img.shields.io/badge/React-19-149ECA?style=for-the-badge&logo=react&logoColor=white)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-MIT-58d6a7?style=for-the-badge)
 
-[Visão geral](#-visão-geral) · [Funcionalidades](#-funcionalidades) · [Arquitetura](#-arquitetura) · [Começando](#-começando) · [API](#-api) · [Roadmap](#-roadmap)
+[Visão geral](#-visão-geral) · [Funcionalidades](#-funcionalidades) · [Arquitetura](#-arquitetura) · [Começando](#-começando) · [Testes](#-testes-e-validação) · [API](#-api) · [Roadmap](#-roadmap)
 
 🌐 Português (Brasil) · [English](README-EN.md)
 
@@ -52,7 +52,7 @@ O grafo é uma parte central da experiência: o usuário pode navegar pela estru
 - 🧭 **Revisão humana de achados** — registra confirmação, falso positivo, risco aceito, não reproduzibilidade ou correção em outra revisão.
 - ⚙️ **SQLite por padrão** — começa sem servidor de banco; PostgreSQL também é suportado.
 - 📏 **Avaliação offline da recuperação RAG** — inclui corpus rotulado e métricas Hit@k, Recall@k, MRR e intenção, sem chamadas ao provedor durante a avaliação de recuperação.
-- 🖥️ **Pacote desktop experimental para Windows** — inclui um launcher empacotado com PyInstaller; o aceite em máquina limpa e o fluxo de IA no pacote ainda precisam de validação adicional.
+- 🖥️ **Aplicativo desktop experimental para Windows** — inclui um inicializador empacotado com PyInstaller, configuração local de IA e persistência SQLite. O build local de 27/10 às 23:40 foi escolhido após teste manual: abre rapidamente, permite configurar a API e usar o chatbot. Ainda há bugs de interface/experiência, e a aceitação em Windows limpo permanece pendente; a release oficial ainda não foi publicada.
 
 ## 🧰 Tecnologias
 
@@ -169,13 +169,17 @@ Há scripts auxiliares para Linux/macOS em `scripts/start-api.sh` e `scripts/sta
 
 ### Pacote desktop para Windows (experimental)
 
-O script de build prepara o frontend, executa as verificações locais, empacota o launcher com PyInstaller e gera um ZIP em Downloads:
+O script de build prepara o frontend, executa verificações locais, empacota o inicializador com PyInstaller e gera um ZIP em Downloads:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\desktop\build-windows.ps1"
 ```
 
-Para testar um pacote extraído, execute `desktop\test-windows-package.ps1` com o diretório do pacote indicado em `-PackageDirectory`. O smoke test local verificou inicialização, interface, token de sessão local, health check e persistência SQLite. **O pacote ainda não foi aceito em uma máquina limpa sem Python, Node.js e Docker; o fluxo de IA do desktop também requer validação end-to-end.**
+Para testar um pacote extraído, execute `desktop\test-windows-package.ps1` com o diretório do pacote indicado por `-PackageDirectory`. O smoke test automatizado local verificou inicialização, interface, token de sessão local, health check, criação do SQLite e persistência após uma segunda inicialização.
+
+**Candidato escolhido manualmente:** o executável construído em 27/10/2026 às 23:40 foi aberto no Windows de desenvolvimento; a configuração da API e o uso do chatbot foram exercitados e funcionaram melhor que no build anterior. Ainda há bugs de interface/experiência que precisam ser registrados e avaliados. O pacote ainda não foi aceito em uma máquina Windows limpa sem Python, Node.js e Docker.
+
+A distribuição planejada é um ZIP anexado a uma **GitHub Release**, separado do código-fonte — não um binário commitado no repositório. Antes de publicar a release, confirme o nome/caminho exato do ZIP selecionado, calcule seu SHA-256 e conclua a aceitação em máquina limpa. O candidato testado localmente não deve ser confundido com uma release oficial já publicada.
 
 ## 🔧 Configuração
 
@@ -258,29 +262,44 @@ O prefixo da API é `/api/v1`. A documentação OpenAPI interativa fica disponí
 
 ## 🧪 Testes e validação
 
-**Última validação local registrada no Windows 11:**
+### Validação de clone limpo — 28/10/2026
 
-- Backend: **101 testes aprovados**; `compileall` e Ruff aprovados.
-- Frontend: `npm ci`, ESLint, verificação de tipos TypeScript e build de produção do Vite aprovados.
-- Layout do grafo: 420 nós sintéticos testados sem sobreposições; o modo de visão geral exibiu 180 nós e as visualizações de módulos filtrados exibiram 20.
-- Testes de configuração do desktop: 3 aprovados.
-- Pacote desktop Windows: build do PyInstaller concluído, ZIP gerado e SHA-256 conferido.
-- Smoke test do pacote: primeira inicialização, interface, token de sessão local, health check, criação do SQLite e persistência após uma segunda inicialização aprovados (código de saída 0).
-- Benchmark offline das skills determinísticas: 6/6 casos aprovados, nota 1,0 e zero chamadas ao provedor. Isso mede os contratos definidos das skills, não a segurança absoluta do repositório analisado.
-- Uma pergunta manual à IA sobre o próprio repositório Yggdrasil retornou uma resposta fundamentada em evidências e com citações. Isso não comprova a correção semântica de todas as respostas possíveis.
-- **Pendências:** o aceite em máquina limpa ainda não foi realizado; além disso, o fluxo de IA no pacote desktop apresentou um erro de autorização de sessão em um teste manual e continua pendente de validação/correção.
+A branch `test/env-file-detection`, commit `3d07627`, foi clonada em uma pasta separada no Windows e testada sem reaproveitar o ambiente Python do repositório de desenvolvimento. Isso valida o conteúdo daquele commit; não significa que ele já esteja integrado à `main`, que o CI tenha passado ou que o pacote desktop tenha sido aprovado em máquina limpa.
 
-Essas são verificações locais de desenvolvimento; não significam que o CI ou o aceite de release em máquina limpa tenham sido aprovados.
+- **Backend:** a suíte completa `python -m pytest -q` passou sem falhas no clone. Foi emitido um `StarletteDeprecationWarning` sobre a integração de `httpx` com `starlette.testclient`; não bloqueou os testes.
+- **Frontend:** `npm.cmd ci` instalou as dependências e o npm reportou zero vulnerabilidades na auditoria. Houve avisos de versão descontinuada do ESLint e de script de instalação do `esbuild` bloqueado pela política local do npm; mesmo assim, as verificações seguintes passaram.
+- **ESLint:** `npm.cmd run lint` passou.
+- **Build de produção:** `npm.cmd run build` passou, incluindo `tsc -b` e Vite.
+- **Layout do grafo:** `npm.cmd run test:layout` passou: 420 nós, sem sobreposições; visão geral com 180 nós e módulos filtrados com 20.
+- **Benchmark offline de skills:** 6/6 casos aprovados, `quality_score=1.0`, `provider_calls=0`. Isso verifica os contratos determinísticos incluídos no corpus, não a segurança absoluta de um repositório.
+- **Avaliação RAG real:** no snapshot `kinegratii/borax` commit `01cbbbf7ce33ee22d23c462c525d07e1320e67a7`, 6 de 7 casos foram pontuados; `intent_accuracy=1.0`, `MRR=0.7833`, `Hit@1=0.6667`, `Hit@3=0.8333`, `Hit@5=1.0`, `Recall@1=0.5`, `Recall@3=0.75` e `Recall@5=1.0`. Comparada à baseline no mesmo snapshot, MRR subiu de `0.7208` para `0.7833`, Hit@3 de `0.6667` para `0.8333`, Hit@5 de `0.8333` para `1.0` e Recall@5 de `0.75` para `1.0`. O caso que pede prova de ausência de vulnerabilidades não conta como recuperação pontuável, porque exige avaliar a resposta semântica.
+- **Corpus de qualidade das respostas:** `python scripts/evaluate_answers.py --latest` passou em modo de simulação, validando o corpus e o snapshot esperado e indicando quatro perguntas que seriam executadas. Nenhuma pergunta foi enviada à IA; isso não é uma avaliação semântica gerada pelo modelo.
+- **Desktop:** o smoke test local verificou inicialização, UI, token de sessão local, health check e persistência SQLite. O executável de 27/10 às 23:40 foi escolhido pelo usuário após abrir, configurar a API e exercitar o chatbot na máquina de desenvolvimento. Bugs de interface/experiência ainda existem; a aceitação em Windows limpo e a identificação definitiva do ZIP/SHA-256 para release estão pendentes.
+
+Esses resultados são reproduzíveis para o commit/snapshot indicados. Não representam uma aprovação de CI nem um aceite do aplicativo desktop em uma máquina limpa.
+
+Para repetir a validação de código a partir de um clone separado enquanto a branch de teste estiver disponível:
+
+```powershell
+git clone --branch test/env-file-detection --single-branch https://github.com/GabrielJalmeida/yggdrasil.git ..\yggdrasil-clean-check
+```
+
+Depois, entre na pasta clonada e siga os comandos abaixo. O clone de teste registrado nesta seção era o commit `3d07627`.
 
 ### Executar os testes do backend
 
-A partir da raiz do repositório:
+A partir da raiz do repositório, no PowerShell:
 
 ```powershell
 cd services/api
-python -m pip install -e ".[dev]"
-python -m pytest -q
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts/evaluate_skills.py
 ```
+
+O ambiente virtual mantém as dependências isoladas. Os comandos usam o executável Python diretamente, sem depender da ativação do ambiente.
 
 ### Executar as verificações do frontend
 
@@ -292,16 +311,31 @@ npm run build
 npm run test:layout
 ```
 
+Se a política do PowerShell bloquear `npm.ps1` com uma mensagem sobre execução de scripts, use os wrappers `npm.cmd` (por exemplo, `npm.cmd ci` e `npm.cmd run build`) em vez de enfraquecer a política de execução do Windows.
+
 ### Avaliação offline da recuperação RAG
 
-O projeto inclui um corpus rotulado para `kinegratii/borax` e um harness local que mede a recuperação de arquivos esperados. Ele não mede, por si só, a correção semântica das respostas da IA nem valida abstinência.
+A avaliação precisa de uma análise concluída do repositório declarado pelo corpus, persistida no **mesmo banco** usado pelo script. Inicie a API/web, analise `https://github.com/kinegratii/borax` na referência `master` e aguarde a conclusão. Depois, a partir de `services/api`:
 
 ```powershell
-cd services/api
-python scripts/evaluate_rag.py --analysis-id "ID_DA_ANALISE" --cases evaluation/corpora/borax.json --output .\data\rag-evaluation-borax.json
+python scripts/evaluate_rag.py --latest --cases evaluation/corpora/borax.json
 ```
 
-Analise o repositório do corpus na interface antes de executar. Use o ID de uma análise concluída e o mesmo banco configurado pela API. Caminhos anotados que não existem no snapshot ou cujo conteúdo não foi lido são excluídos das métricas, e o relatório registra o SHA do commit. Consulte [`docs/RAG-EVALUATION.md`](docs/RAG-EVALUATION.md) para detalhes.
+`--latest` seleciona a análise concluída mais recente daquele repositório, não a última análise de qualquer repositório. Para salvar o relatório:
+
+```powershell
+python scripts/evaluate_rag.py --latest --cases evaluation/corpora/borax.json --output .\data\rag-evaluation-borax.json
+```
+
+O relatório registra o SHA analisado, métricas e anotações inválidas/ausentes. As métricas medem recuperação, não correção semântica da resposta. Consulte [`docs/RAG-EVALUATION.md`](docs/RAG-EVALUATION.md).
+
+### Validar o corpus de qualidade das respostas sem usar IA
+
+```powershell
+python scripts/evaluate_answers.py --latest
+```
+
+Sem `--run-provider`, esse comando é apenas uma simulação: verifica se o corpus é válido e se a análise salva corresponde ao snapshot esperado, mas não gera nem julga respostas. Acrescentar `--run-provider` envia perguntas reais ao modelo configurado e pode consumir cota ou gerar custo; use somente quando isso for intencional.
 
 ## 🛡️ Segurança, privacidade e limites
 
@@ -346,10 +380,12 @@ yggdrasil/
 - [x] Eventos de progresso e exportação Markdown.
 - [x] SQLite como padrão e suporte a PostgreSQL.
 - [x] Harness inicial para avaliação offline da recuperação e corpus versionado.
-- [x] Protótipo desktop Windows empacotado e smoke test local básico.
-- [ ] Validar instalação limpa, build e lint do frontend em CI.
-- [ ] Ampliar a avaliação da qualidade semântica das respostas e da abstinência.
-- [ ] Concluir validação end-to-end da IA no pacote desktop e teste em Windows limpo.
+- [x] Protótipo desktop Windows empacotado, smoke test local e fluxo manual de configuração da API/chatbot exercitados no build escolhido.
+- [x] Validar em clone limpo do commit `3d07627` a suíte backend, lint/build frontend, layout do grafo, benchmark offline das skills e avaliação RAG.
+- [ ] Corrigir/registrar bugs restantes de interface e UX do desktop.
+- [ ] Testar o ZIP escolhido em Windows limpo, identificar o artefato exato, calcular SHA-256 e publicar a GitHub Release separada do código-fonte.
+- [ ] Executar avaliações reais de respostas com IA e revisão humana; a simulação `evaluate_answers.py --latest` não mede correção semântica.
+- [ ] Validar instalação limpa, build e lint em CI.
 - [ ] Melhorar a navegação do grafo e paginação de resultados grandes conforme o uso observado.
 - [ ] Considerar uma segunda linguagem e recuperação semântica somente se a avaliação demonstrar benefício.
 - [ ] Explorar comparação de snapshots e reanálise incremental.

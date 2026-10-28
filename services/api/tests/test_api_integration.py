@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
 import sqlite3
 import zipfile
@@ -15,14 +16,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import routes
-from app.application.questions import classify_question
 from app.application import runner
+from app.application.questions import classify_question
 from app.db import Base, get_db
 from app.domain.skills import FindingData
 from app.infrastructure.github import GitHubError, RepositoryAddress, ResolvedRepository
 from app.main import app
 from app.models import AnalysisEvent, AnalysisRun, GraphNode, SourceFile
-
 
 SECRET_VALUE = "very_sensitive_demo_key_that_must_not_leave_storage"
 COMMIT = "a" * 40
@@ -54,7 +54,7 @@ class FakeGitHubClient:
     def __init__(self, token: str | None = None) -> None:
         self.token = token
 
-    def __enter__(self) -> "FakeGitHubClient":
+    def __enter__(self) -> FakeGitHubClient:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -87,7 +87,7 @@ class FakeLargeRepoGitHubClient(FakeGitHubClient):
             "from app.service import calculate\n"
             f'API_KEY = "{SECRET_VALUE}"\n'
             "def run():\n    return calculate(1)\n"
-        ).encode("utf-8"),
+        ).encode(),
         "app/service.py": b"def calculate(value):\n    return value + 1\n",
         "tests/test_main.py": b"def test_run():\n    assert True\n",
         "pyproject.toml": b"[project]\ndependencies = []\n",
@@ -185,6 +185,18 @@ def test_graph_reports_exact_response_limits_and_server_side_filters(
     assert base["total_nodes"] == base["repository_total_nodes"]
     assert base["truncated_nodes"] is True
     assert base["truncated"] is True
+    assert base["offset"] == 0
+    assert base["page_size"] == 1
+    assert base["has_more_nodes"] is True
+
+    second_page = client.get(
+        f"/api/v1/analyses/{analysis_id}/graph?limit=1&offset=1&edge_limit=1"
+    ).json()
+    assert second_page["offset"] == 1
+    assert second_page["page_size"] == 1
+    assert second_page["returned_nodes"] == 1
+    assert second_page["nodes"][0]["id"] != base["nodes"][0]["id"]
+    assert second_page["has_more_nodes"] is (second_page["total_nodes"] > 2)
 
     edge_limited = client.get(
         f"/api/v1/analyses/{analysis_id}/graph?limit=1000&edge_limit=1"
@@ -239,6 +251,9 @@ def test_analysis_pipeline_persists_graph_redacts_secrets_and_exports_markdown(
     assert payload["coverage"]["inventory_total"] == 4
     assert payload["coverage"]["eligible_files"] == 4
     assert payload["coverage"]["python_parsed"] >= 2
+    assert payload["coverage"]["assessment"] in {"partial", "observed"}
+    assert payload["coverage"]["eligibility_status_counts"]["eligible"] == payload["coverage"]["eligible_files"]
+    assert "parsed" in payload["coverage"]["parse_status_counts"]
 
     graph = client.get(f"/api/v1/analyses/{analysis_id}/graph").json()
     assert graph["returned_nodes"] == len(graph["nodes"])
@@ -529,9 +544,22 @@ def test_large_archive_falls_back_to_selective_tree_ingestion(
     assert any("leitura seletiva" in warning for warning in analysis["warnings"])
     assert analysis["progress"]["ingestion_method"] == "github_tree"
 
-    events = client.get(f"/api/v1/analyses/{analysis_id}/events").text
+    event_response = client.get(f"/api/v1/analyses/{analysis_id}/events")
+    events = event_response.text
+    assert "retry: 1500" in events
     assert "selective_tree_fallback_started" in events
     assert "analysis_completed" in events
+    event_ids = [int(line[4:]) for line in events.splitlines() if line.startswith("id: ")]
+    assert len(event_ids) > 3
+    assert event_ids == sorted(set(event_ids)), "SSE must replay each persisted event once and in sequence order"
+    replay_cursor = event_ids[-2]
+    replay = client.get(
+        f"/api/v1/analyses/{analysis_id}/events?after=1",
+        headers={"Last-Event-ID": str(replay_cursor)},
+    ).text
+    replay_ids = [int(line[4:]) for line in replay.splitlines() if line.startswith("id: ")]
+    assert replay_ids
+    assert min(replay_ids) > replay_cursor, "Last-Event-ID must take precedence over an older query cursor"
 
     findings = client.get(f"/api/v1/analyses/{analysis_id}/findings").json()["items"]
     assert len(findings) == 1
@@ -690,11 +718,66 @@ def test_question_endpoint_recovers_redacted_evidence_and_validates_citations(
     assert "referências verificáveis" in ungrounded.json()["answer"]
 
 
+def test_question_stream_emits_retrieval_trace_before_answer_and_maps_evidence_to_nodes(
+    isolated_client: tuple[TestClient, sessionmaker[Session]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.infrastructure.ai_provider import AIAnswer
+
+    client, _factory = isolated_client
+    created = client.post(
+        "/api/v1/analyses",
+        json={"repository_url": "https://github.com/example-org/qa-stream-repo", "ref": "main"},
+    )
+    assert created.status_code == 202, created.text
+    analysis_id = created.json()["id"]
+    monkeypatch.setattr(routes, "ai_is_configured", lambda: True)
+    monkeypatch.setattr(
+        routes,
+        "generate_answer",
+        lambda *_args, **_kwargs: AIAnswer(
+            answer="A função está definida no arquivo de serviço. [E1]",
+            citation_ids=["E1"],
+            insufficient_evidence=False,
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/analyses/{analysis_id}/questions/stream",
+        json={"question": "Onde a função calculate está definida?"},
+    )
+    assert response.status_code == 200, response.text
+    frames: dict[str, list[dict[str, object]]] = {}
+    for frame in response.text.split("\n\n"):
+        event_type = "message"
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+        if data_lines:
+            frames.setdefault(event_type, []).append(json.loads("\n".join(data_lines)))
+
+    assert "question_started" in frames
+    assert "question_retrieval" in frames
+    assert "question_answer" in frames
+    assert response.text.index("event: question_retrieval") < response.text.index("event: question_answer")
+    trace = frames["question_retrieval"][0]["steps"]
+    assert isinstance(trace, list) and trace
+    service_step = next(item for item in trace if item.get("path") == "app/service.py")
+    assert service_step["node_ids"], "retrieved service evidence should map to persisted graph nodes"
+    answer = frames["question_answer"][0]
+    assert answer["citations"][0]["path"] == "app/service.py"
+    assert any(item["cited"] for item in answer["retrieval_trace"])
+
+
 def test_question_endpoint_requires_configured_ai_and_rejects_bad_scope(
     isolated_client: tuple[TestClient, sessionmaker[Session]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _factory = isolated_client
+    monkeypatch.setattr(routes, "ai_is_configured", lambda: False)
     created = client.post(
         "/api/v1/analyses",
         json={"repository_url": "https://github.com/example-org/qa-disabled", "ref": "main"},

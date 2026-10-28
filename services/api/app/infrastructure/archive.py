@@ -82,7 +82,13 @@ def _language_for(path: str) -> str | None:
 
 def _is_text_candidate(path: str) -> bool:
     p = PurePosixPath(path)
-    return p.name in SPECIAL_TEXT_NAMES or p.suffix.lower() in TEXT_SUFFIXES
+    name = p.name.lower()
+    return (
+        p.name in SPECIAL_TEXT_NAMES
+        or name == ".env"
+        or name.startswith(".env.")
+        or p.suffix.lower() in TEXT_SUFFIXES
+    )
 
 
 def _is_in_excluded_directory(path: str) -> bool:

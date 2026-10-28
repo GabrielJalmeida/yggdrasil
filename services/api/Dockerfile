@@ -7,6 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml requirements.txt ./
 COPY app ./app
+COPY scripts ./scripts
+COPY evaluation ./evaluation
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 RUN pip install --upgrade pip && pip install .

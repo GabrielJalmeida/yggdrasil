@@ -26,12 +26,17 @@ from app.models import (
     Finding,
     GraphEdge,
     GraphNode,
+    ReportExport,
     Repository,
     RepositorySnapshot,
-    ReportExport,
     SourceFile,
 )
-from app.schemas.analysis import AnalysisCreate, AnalysisQuestion, AnalysisQueued, FindingStatusUpdate
+from app.schemas.analysis import (
+    AnalysisCreate,
+    AnalysisQuestion,
+    AnalysisQueued,
+    FindingStatusUpdate,
+)
 
 router = APIRouter(prefix="/api/v1")
 TERMINAL_STATES = {"completed", "completed_with_warnings", "failed", "cancelled"}
@@ -76,6 +81,22 @@ def _analysis_view(db: Session, run: AnalysisRun) -> dict[str, Any]:
                 .group_by(SourceFile.parse_status)
             ).all()
         }
+    # Inventory/eligibility, content parsing and graph rendering are separate dimensions.
+    # Keep the source state dictionaries explicit and only label known partial states where
+    # the persisted diagnostics support that conclusion.
+    incomplete_reasons: list[str] = []
+    partial_markers = ("parcial", "atingiu o limite", "limite total", "falha ao ler", "conteúdo textual foi atingido", "metadados incompletos")
+    for warning in (run.warning_summary or []):
+        warning_text = str(warning)
+        if any(marker in warning_text.casefold() for marker in partial_markers):
+            incomplete_reasons.append(warning_text)
+    failed_reads = eligibility_counts.get("failed", 0)
+    failed_parses = parse_counts.get("failed", 0)
+    if failed_reads:
+        incomplete_reasons.append(f"{failed_reads} arquivo(s) do inventário não puderam ser lidos.")
+    if failed_parses:
+        incomplete_reasons.append(f"{failed_parses} arquivo(s) não puderam ser analisados pelo parser.")
+    incomplete_reasons = list(dict.fromkeys(incomplete_reasons))
     return {
         "id": run.id,
         "repository": {
@@ -115,6 +136,10 @@ def _analysis_view(db: Session, run: AnalysisRun) -> dict[str, Any]:
             "python_parsed": python_parse_counts.get("parsed", 0),
             "python_failed": python_parse_counts.get("failed", 0),
             "python_pending": python_parse_counts.get("queued", 0) + python_parse_counts.get("parsing", 0),
+            "eligibility_status_counts": eligibility_counts,
+            "parse_status_counts": parse_counts,
+            "assessment": "pending" if run.status not in TERMINAL_STATES else ("partial" if incomplete_reasons else "observed"),
+            "incomplete_reasons": incomplete_reasons,
         },
         "created_at": run.created_at,
         "started_at": run.started_at,
@@ -387,6 +412,203 @@ def ask_about_analysis(
     }
 
 
+def _question_sse_frame(event_type: str, payload: dict[str, Any]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+def _question_trace_steps(
+    db: Session,
+    run: AnalysisRun,
+    evidence: list[Any],
+    cited_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Map retrieved evidence to graph nodes without exposing source excerpts in progress events."""
+    cited = cited_ids or set()
+    paths = list(dict.fromkeys(item.path for item in evidence if item.path))
+    if not run.snapshot_id or not paths:
+        node_groups: dict[str, list[GraphNode]] = {}
+    else:
+        source_rows = db.scalars(
+            select(SourceFile).where(
+                SourceFile.snapshot_id == run.snapshot_id,
+                SourceFile.path.in_(paths),
+            )
+        ).all()
+        source_ids = [source.id for source in source_rows]
+        node_rows = db.scalars(
+            select(GraphNode)
+            .where(
+                GraphNode.snapshot_id == run.snapshot_id,
+                GraphNode.source_file_id.in_(source_ids),
+            )
+            .order_by(GraphNode.node_type, GraphNode.start_line, GraphNode.label)
+        ).all() if source_ids else []
+        node_groups = {path: [] for path in paths}
+        source_path_by_id = {source.id: source.path for source in source_rows}
+        for node in node_rows:
+            path = source_path_by_id.get(node.source_file_id or "")
+            if path:
+                node_groups.setdefault(path, []).append(node)
+
+    steps: list[dict[str, Any]] = []
+    for rank, item in enumerate(evidence, start=1):
+        path_nodes = node_groups.get(item.path or "", [])
+        file_nodes = [node for node in path_nodes if node.node_type == "file"]
+        if item.start_line is not None and item.end_line is not None:
+            line_nodes = [
+                node for node in path_nodes
+                if node.node_type != "file"
+                and node.start_line is not None
+                and node.end_line is not None
+                and node.start_line <= item.end_line
+                and node.end_line >= item.start_line
+            ]
+        else:
+            line_nodes = [node for node in path_nodes if node.node_type != "file"][:6]
+        selected_nodes = file_nodes[:1] + line_nodes[:9]
+        if not selected_nodes:
+            selected_nodes = path_nodes[:8]
+        steps.append({
+            "evidence_id": item.id,
+            "rank": rank,
+            "kind": item.kind,
+            "path": item.path,
+            "start_line": item.start_line,
+            "end_line": item.end_line,
+            "node_ids": list(dict.fromkeys(node.id for node in selected_nodes))[:10],
+            "cited": item.id in cited,
+        })
+    return steps
+
+
+@router.post("/analyses/{analysis_id}/questions/stream")
+def stream_question_about_analysis(
+    analysis_id: str,
+    payload: AnalysisQuestion,
+) -> StreamingResponse:
+    """Stream real retrieval steps first, then the answer; no private model reasoning is exposed."""
+    def event_stream():
+        yield _question_sse_frame("question_started", {"stage": "validating_and_retrieving"})
+        with SessionLocal() as stream_db:
+            run = stream_db.get(AnalysisRun, analysis_id)
+            if run is None:
+                yield _question_sse_frame("question_error", {"code": "ANALYSIS_NOT_FOUND", "message": "A análise solicitada não foi encontrada.", "status": 404})
+                return
+            if run.status not in {"completed", "completed_with_warnings"}:
+                yield _question_sse_frame("question_error", {"code": "ANALYSIS_NOT_COMPLETE", "message": "As perguntas ficam disponíveis depois que a análise terminar com sucesso.", "status": 409})
+                return
+            if not ai_is_configured():
+                yield _question_sse_frame("question_error", {"code": "AI_NOT_CONFIGURED", "message": "A IA não está configurada. Configure o provedor e reinicie a API.", "status": 503})
+                return
+            if payload.scope.node_ids:
+                known_node_ids = set(stream_db.scalars(
+                    select(GraphNode.id).where(
+                        GraphNode.snapshot_id == run.snapshot_id,
+                        GraphNode.id.in_(payload.scope.node_ids),
+                    )
+                ).all())
+                if known_node_ids != set(payload.scope.node_ids):
+                    yield _question_sse_frame("question_error", {"code": "INVALID_NODE_SCOPE", "message": "Um ou mais nós não pertencem ao snapshot desta análise.", "status": 422})
+                    return
+            if payload.scope.paths:
+                source_paths = stream_db.scalars(
+                    select(SourceFile.path).where(SourceFile.snapshot_id == run.snapshot_id).limit(20000)
+                ).all()
+                valid_paths = {
+                    requested: any(path == requested or path.startswith(requested + "/") for path in source_paths)
+                    for requested in payload.scope.paths
+                }
+                if not all(valid_paths.values()):
+                    yield _question_sse_frame("question_error", {"code": "INVALID_PATH_SCOPE", "message": "Os caminhos informados não pertencem ao snapshot desta análise.", "status": 422})
+                    return
+
+            question_plan = classify_question(payload.question)
+            evidence = retrieve_evidence(
+                stream_db,
+                run,
+                payload.question,
+                node_ids=payload.scope.node_ids or None,
+                paths=payload.scope.paths or None,
+                intent=question_plan.intent,
+            )
+            initial_trace = _question_trace_steps(stream_db, run, evidence)
+            yield _question_sse_frame("question_retrieval", {
+                "question_intent": question_plan.intent,
+                "question_intent_label": question_plan.label,
+                "retrieval_strategy": question_plan.strategy,
+                "evidence_count": len(evidence),
+                "steps": initial_trace,
+            })
+
+            if not evidence:
+                yield _question_sse_frame("question_answer", {
+                    "answer": "Não encontrei evidências suficientes no conteúdo persistido para responder a essa pergunta. Tente usar nomes de módulos, símbolos ou caminhos que existam no mapa.",
+                    "citations": [],
+                    "insufficient_evidence": True,
+                    "evidence_count": 0,
+                    "provider": settings.ai_provider,
+                    "model": settings.ai_model,
+                    "question_intent": question_plan.intent,
+                    "question_intent_label": question_plan.label,
+                    "retrieval_strategy": question_plan.strategy,
+                    "retrieved_kinds": [],
+                    "retrieval_trace": [],
+                    "notice": "Nenhum trecho foi enviado ao provedor porque a recuperação não encontrou evidências relevantes.",
+                })
+                return
+
+            context = [item.to_dict() for item in evidence]
+            try:
+                generated = generate_answer(
+                    payload.question,
+                    context,
+                    intent=question_plan.intent,
+                    intent_guidance=question_plan.guidance,
+                )
+            except AIProviderError as exc:
+                yield _question_sse_frame("question_error", {"code": exc.code, "message": exc.message, "status": exc.status_code})
+                return
+
+            by_id = {item.id: item for item in evidence}
+            valid_ids: list[str] = []
+            for citation_id in generated.citation_ids:
+                if citation_id in by_id and citation_id not in valid_ids:
+                    valid_ids.append(citation_id)
+            insufficient = generated.insufficient_evidence or not valid_ids
+            allowed_markers = {f"[{citation_id}]" for citation_id in valid_ids}
+            answer = re.sub(
+                r"\[E[0-9]+\]",
+                lambda match: match.group(0) if match.group(0) in allowed_markers else "",
+                generated.answer,
+            )
+            if not valid_ids:
+                answer = (
+                    "A resposta do provedor não trouxe referências verificáveis para as evidências recuperadas. "
+                    "Não vou apresentar a conclusão como confirmada; reformule a pergunta ou investigue os arquivos no inspetor."
+                )
+            trace = _question_trace_steps(stream_db, run, evidence, set(valid_ids))
+            yield _question_sse_frame("question_answer", {
+                "answer": answer,
+                "citations": [by_id[item].to_dict() for item in valid_ids],
+                "insufficient_evidence": insufficient,
+                "evidence_count": len(evidence),
+                "provider": settings.ai_provider,
+                "model": settings.ai_model,
+                "question_intent": question_plan.intent,
+                "question_intent_label": question_plan.label,
+                "retrieval_strategy": question_plan.strategy,
+                "retrieved_kinds": sorted({item.kind for item in evidence}),
+                "retrieval_trace": trace,
+                "notice": "A trilha mostra as fontes recuperadas e citadas, não o raciocínio interno do modelo. A existência de uma citação não garante correção semântica.",
+            })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/analyses/{analysis_id}/graph")
 def get_graph(
     analysis_id: str,
@@ -394,6 +616,7 @@ def get_graph(
     relation_type: str | None = Query(default=None, max_length=40),
     q: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=2000, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0, le=1000000),
     edge_limit: int = Query(default=4000, ge=1, le=10000),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -405,6 +628,7 @@ def get_graph(
         return {
             "nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0,
             "repository_total_nodes": 0, "repository_total_edges": 0,
+            "offset": offset, "page_size": limit, "has_more_nodes": False,
             "returned_nodes": 0, "returned_edges": 0,
             "eligible_edges_for_returned_nodes": 0,
             "truncated_nodes": False, "truncated_edges": False, "truncated": False,
@@ -442,7 +666,7 @@ def get_graph(
     # total_nodes is the number matching the active server-side filters. Keep the complete
     # snapshot totals separately, so UI can distinguish filtered search results from coverage.
     total_nodes = db.scalar(select(func.count()).select_from(node_query.subquery())) or 0
-    nodes = db.scalars(node_query.order_by(GraphNode.node_type, GraphNode.label).limit(limit)).all()
+    nodes = db.scalars(node_query.order_by(GraphNode.node_type, GraphNode.label).offset(offset).limit(limit)).all()
     selected_ids = [node.id for node in nodes]
     file_ids = {node.source_file_id for node in nodes if node.source_file_id}
     files = db.scalars(select(SourceFile).where(SourceFile.id.in_(file_ids))).all() if file_ids else []
@@ -470,7 +694,7 @@ def get_graph(
         eligible_edges = 0
         edges = []
 
-    truncated_nodes = total_nodes > len(nodes)
+    truncated_nodes = total_nodes > offset + len(nodes)
     truncated_edges = eligible_edges > len(edges)
     return {
         "nodes": [_graph_node_view(node, file_paths) for node in nodes],
@@ -488,6 +712,9 @@ def get_graph(
         ],
         "total_nodes": total_nodes,
         "total_edges": total_edges,
+        "offset": offset,
+        "page_size": limit,
+        "has_more_nodes": truncated_nodes,
         "repository_total_nodes": repository_total_nodes,
         "repository_total_edges": repository_total_edges,
         "returned_nodes": len(nodes),
@@ -672,6 +899,9 @@ def stream_analysis_events(
 
     def event_stream():
         nonlocal last_seen
+        # Tell EventSource when to reconnect if the connection drops. The persisted
+        # sequence cursor and Last-Event-ID header provide replay without guessing progress.
+        yield "retry: 1500\n\n"
         started = time.monotonic()
         while time.monotonic() - started < 1800:
             with SessionLocal() as stream_db:

@@ -36,7 +36,7 @@ import {
   X,
 } from 'lucide-react';
 import { GraphCanvas } from './components/GraphCanvas';
-import { api, isTerminal, statusLabel, type AnalysisView, type Finding, type FindingReviewStatus, type GraphResponse, type NodeDetail, type QuestionAnswer } from './lib/api';
+import { api, isTerminal, statusLabel, type AnalysisView, type AnalysisPathStep, type Finding, type FindingReviewStatus, type GraphResponse, type NodeDetail, type QuestionAnswer, type QuestionTraceStep } from './lib/api';
 
 const defaultSkills = ['appsec.secrets-detection', 'engineering.test-inventory'];
 type FontScale = 'small' | 'normal' | 'large';
@@ -61,6 +61,7 @@ const eventTitles: Record<string, string> = {
   skills_started: 'Skills determinísticas iniciadas',
   skills_completed: 'Inspeções iniciais concluídas',
   finding_created: 'Achado registrado para revisão',
+  analysis_path_step: 'Varredura interativa de arquivo',
   finding_status_changed: 'Revisão de achado atualizada',
   analysis_completed: 'Análise finalizada',
   analysis_failed: 'A análise encontrou uma falha',
@@ -110,7 +111,9 @@ function activityDescription(eventType: string, payload: Record<string, unknown>
   if (eventType === 'inventory_completed') return `${String(payload.files_discovered ?? 0)} arquivos encontrados`;
   if (eventType === 'graph_build_completed') return `${String(payload.nodes_created ?? 0)} nós · ${String(payload.edges_created ?? 0)} relações`;
   if (eventType === 'finding_created') return `${String(payload.severity ?? 'ACHADO')} · ${String(payload.title ?? 'Novo achado')}`;
+  if (eventType === 'analysis_path_step') return `${String(payload.skill_id ?? 'skill')} · ${String(payload.path ?? 'arquivo')}`;
   if (eventType === 'analysis_failed') return String(payload.message ?? 'Verifique os detalhes da análise');
+  if (eventType === 'analysis_path_step') return `${String(payload.skill_id ?? 'skill')} · ${String(payload.path ?? 'arquivo')}`;
   if (eventType === 'analysis_completed') return `${String(payload.findings_created ?? 0)} achados registrados`;
   return eventTitles[eventType] ?? eventType.replaceAll('_', ' ');
 }
@@ -138,11 +141,21 @@ export function App() {
   const [questionAnswer, setQuestionAnswer] = useState<QuestionAnswer | null>(null);
   const [questionError, setQuestionError] = useState<string | null>(null);
   const [askingQuestion, setAskingQuestion] = useState(false);
+  const [questionTrace, setQuestionTrace] = useState<QuestionTraceStep[]>([]);
+  const [activeQuestionTraceIndex, setActiveQuestionTraceIndex] = useState(-1);
+  const [questionTraceStatus, setQuestionTraceStatus] = useState<'idle' | 'retrieving' | 'analyzing' | 'completed' | 'error'>('idle');
+  const [analysisPathHistory, setAnalysisPathHistory] = useState<AnalysisPathStep[]>([]);
+  const [activeAnalysisPath, setActiveAnalysisPath] = useState<AnalysisPathStep | null>(null);
+  const scanPathQueueRef = useRef<AnalysisPathStep[]>([]);
   const [shareEvidenceConfirmed, setShareEvidenceConfirmed] = useState(false);
   const [fontScale, setFontScale] = useState<FontScale>(() => readDisplayPreference('yggdrasil.fontScale', ['small', 'normal', 'large'], 'normal'));
   const [fontFamily, setFontFamily] = useState<FontFamily>(() => readDisplayPreference('yggdrasil.fontFamily', ['system', 'arial', 'trebuchet'], 'system'));
   const [activities, setActivities] = useState<Array<{ id: string; title: string; description: string; time: string; eventType: string }>>([]);
+  const [eventStreamStatus, setEventStreamStatus] = useState<'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed'>('idle');
+  const [loadingGraphPage, setLoadingGraphPage] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const activeEventAnalysisRef = useRef<string | null>(null);
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
   const pollIntervalRef = useRef<number | null>(null);
   const loadedGraphForRef = useRef<string | null>(null);
   const loadedGraphAtTerminalForRef = useRef<string | null>(null);
@@ -152,6 +165,25 @@ export function App() {
   useEffect(() => {
     currentGraphFilterRef.current = { nodeType: filterType, query: searchQuery.trim() };
   }, [filterType, searchQuery]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const next = scanPathQueueRef.current.shift();
+      if (next) {
+        setActiveAnalysisPath(next);
+        setAnalysisPathHistory((previous) => [...previous.slice(-23), next]);
+      }
+    }, 220);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!askingQuestion || questionTrace.length < 2) return;
+    const timer = window.setInterval(() => {
+      setActiveQuestionTraceIndex((current) => (current + 1) % questionTrace.length);
+    }, 720);
+    return () => window.clearInterval(timer);
+  }, [askingQuestion, questionTrace.length]);
 
   useEffect(() => {
     try {
@@ -188,6 +220,24 @@ export function App() {
       return false;
     }
   }, []);
+
+  const loadGraphPage = useCallback(async (offset: number): Promise<GraphResponse | null> => {
+    if (!analysisId) return null;
+    setLoadingGraphPage(true);
+    try {
+      const filter = currentGraphFilterRef.current;
+      const nextGraph = await api.graph(analysisId, { nodeType: filter.nodeType, query: filter.query, offset });
+      setGraph(nextGraph);
+      loadedGraphForRef.current = analysisId;
+      loadedGraphFilterKeyRef.current = `${filter.nodeType}|${filter.query}`;
+      return nextGraph;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Não foi possível carregar a próxima página do grafo.');
+      return null;
+    } finally {
+      setLoadingGraphPage(false);
+    }
+  }, [analysisId]);
 
   useEffect(() => {
     if (!analysisId || !analysis || !isTerminal(analysis.status) || loadedGraphForRef.current !== analysisId) return;
@@ -230,6 +280,7 @@ export function App() {
       if (isTerminal(nextAnalysis.status)) {
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
+        setEventStreamStatus('closed');
         if (pollIntervalRef.current !== null) {
           window.clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
@@ -241,23 +292,50 @@ export function App() {
   }, [loadGraphAndFindings]);
 
   useEffect(() => {
-    if (!analysisId) return;
+    if (!analysisId) { setEventStreamStatus('idle'); return; }
+    if (activeEventAnalysisRef.current !== analysisId) {
+      activeEventAnalysisRef.current = analysisId;
+      processedEventIdsRef.current.clear();
+    }
+    setEventStreamStatus('connecting');
     void refreshAnalysis(analysisId);
     const pollId = window.setInterval(() => void refreshAnalysis(analysisId), 2000);
     pollIntervalRef.current = pollId;
     const source = new EventSource(`/api/v1/analyses/${analysisId}/events`);
     eventSourceRef.current = source;
+    source.onopen = () => setEventStreamStatus('connected');
     const eventNames = [
       'analysis_queued', 'repository_fetch_started', 'repository_metadata_loaded', 'inventory_completed',
       'graph_build_started', 'graph_build_completed', 'skills_started', 'skills_completed',
-      'finding_created', 'analysis_completed', 'analysis_failed', 'file_ignored', 'analysis_warning',
+      'finding_created', 'analysis_path_step', 'analysis_completed', 'analysis_failed', 'file_ignored', 'analysis_warning',
     ];
     const listeners = eventNames.map((eventType) => {
       const listener = (event: Event) => {
         const message = event as MessageEvent<string>;
+        const sequenceId = message.lastEventId?.trim();
+        if (sequenceId && processedEventIdsRef.current.has(sequenceId)) return;
+        if (sequenceId) {
+          processedEventIdsRef.current.add(sequenceId);
+          if (processedEventIdsRef.current.size > 500) {
+            const oldest = processedEventIdsRef.current.values().next().value;
+            if (oldest) processedEventIdsRef.current.delete(oldest);
+          }
+        }
         let payload: Record<string, unknown> = {};
         try { payload = JSON.parse(message.data) as Record<string, unknown>; } catch { /* Empty payload is safe. */ }
-        setActivities((previous) => [
+        if (eventType === 'analysis_path_step' && typeof payload.path === 'string' && Array.isArray(payload.node_ids)) {
+          const step: AnalysisPathStep = {
+            step_number: Number(payload.step_number ?? 0),
+            path: payload.path,
+            skill_id: String(payload.skill_id ?? 'skill'),
+            node_ids: payload.node_ids.filter((value): value is string => typeof value === 'string'),
+            source: 'deterministic_skill_scan',
+          };
+          scanPathQueueRef.current.push(step);
+          // Bound replay after reconnects; the queue always represents real persisted events.
+          if (scanPathQueueRef.current.length > 90) scanPathQueueRef.current = scanPathQueueRef.current.slice(-90);
+        }
+        if (eventType !== 'analysis_path_step') setActivities((previous) => [
           {
             id: `${message.lastEventId || Date.now()}-${eventType}`,
             title: eventTitles[eventType] ?? eventType.replaceAll('_', ' '),
@@ -277,7 +355,8 @@ export function App() {
       return () => source.removeEventListener(eventType, listener);
     });
     source.onerror = () => {
-      // EventSource retries automatically; persisted state is also refreshed independently.
+      // EventSource retries with its persisted Last-Event-ID; API polling remains the fallback.
+      setEventStreamStatus(source.readyState === EventSource.CONNECTING ? 'reconnecting' : 'closed');
     };
     return () => {
       window.clearInterval(pollId);
@@ -319,8 +398,17 @@ export function App() {
     setQuestionText('');
     setQuestionAnswer(null);
     setQuestionError(null);
+    setQuestionTrace([]);
+    setActiveQuestionTraceIndex(-1);
+    setQuestionTraceStatus('idle');
+    setAnalysisPathHistory([]);
+    setActiveAnalysisPath(null);
+    scanPathQueueRef.current = [];
     setShareEvidenceConfirmed(false);
     setActivities([]);
+    setEventStreamStatus('idle');
+    processedEventIdsRef.current.clear();
+    activeEventAnalysisRef.current = null;
     try {
       const created = await api.createAnalysis({
         repository_url: repoUrl.trim(),
@@ -383,9 +471,25 @@ export function App() {
     setAskingQuestion(true);
     setQuestionError(null);
     setQuestionAnswer(null);
+    setQuestionTrace([]);
+    setActiveQuestionTraceIndex(-1);
+    setQuestionTraceStatus('retrieving');
     try {
-      setQuestionAnswer(await api.ask(analysisId, questionText.trim()));
+      const answer = await api.askStream(analysisId, questionText.trim(), (eventType, payload) => {
+        if (eventType === 'question_started') setQuestionTraceStatus('retrieving');
+        if (eventType === 'question_retrieval' && Array.isArray(payload.steps)) {
+          setQuestionTrace(payload.steps as QuestionTraceStep[]);
+          setActiveQuestionTraceIndex(0);
+          setQuestionTraceStatus('analyzing');
+        }
+      });
+      setQuestionAnswer(answer);
+      setQuestionTrace(answer.retrieval_trace ?? []);
+      setQuestionTraceStatus('completed');
+      setActiveQuestionTraceIndex(-1);
     } catch (cause) {
+      setQuestionTraceStatus('error');
+      setActiveQuestionTraceIndex(-1);
       setQuestionError(cause instanceof Error ? cause.message : 'Não foi possível responder à pergunta.');
     } finally {
       setAskingQuestion(false);
@@ -578,6 +682,9 @@ export function App() {
                   <span><strong>{analysis.coverage.not_applicable_files}</strong> fora do parsing Python</span>
                 </div>
                 <p>Estes números descrevem o inventário e os estados de parsing. Categorias de elegibilidade e parsing são dimensões diferentes e podem referir-se ao mesmo arquivo. O limite do mapa é independente.</p>
+                {analysis.coverage.assessment === 'partial' && analysis.coverage.incomplete_reasons?.length ? (
+                  <div className="coverage-inline__diagnostic" role="status"><strong>Escopo parcial conhecido</strong><ul>{analysis.coverage.incomplete_reasons.map((reason, index) => <li key={`${index}-${reason}`}>{reason}</li>)}</ul></div>
+                ) : null}
               </section>
             )}
 
@@ -692,6 +799,25 @@ export function App() {
                   <p className="question-answer-notice">{questionAnswer.notice}</p>
                 </div>
               )}
+              {questionTrace.length > 0 && (
+                <section className="question-trace" aria-label="Trilha visual das evidências">
+                  <div className="question-trace__heading">
+                    <div><span className="question-trace__eyebrow">EXPLORAÇÃO VISUAL</span><strong>Trilha da pergunta</strong></div>
+                    <span className={`question-trace__status is-${questionTraceStatus}`}>{questionTraceStatus === 'retrieving' ? 'Recuperando…' : questionTraceStatus === 'analyzing' ? 'Modelo analisando contexto…' : questionTraceStatus === 'error' ? 'Interrompida' : 'Evidências prontas'}</span>
+                  </div>
+                  <p>Os destaques mostram os arquivos e nós realmente recuperados. Verde indica evidência citada; ciano, recuperada; âmbar, passo atual. Isto não revela raciocínio interno do modelo.</p>
+                  <div className="question-trace__steps">
+                    {questionTrace.map((step, index) => (
+                      <button type="button" key={`${step.evidence_id}-${step.path ?? 'profile'}-${index}`} className={`question-trace__step ${activeQuestionTraceIndex === index && askingQuestion ? 'is-active' : ''} ${step.cited ? 'is-cited' : ''}`} onClick={() => { setActiveQuestionTraceIndex(index); if (step.node_ids[0]) setSelectedId(step.node_ids[0]); }}>
+                        <span className="question-trace__rank">{step.evidence_id}</span>
+                        <span className="question-trace__path"><strong>{step.path ?? 'Perfil do repositório'}</strong><small>{step.start_line ? `L${step.start_line}${step.end_line && step.end_line !== step.start_line ? `–${step.end_line}` : ''}` : step.kind.replaceAll('_', ' ')}</small></span>
+                        <span className={`question-trace__kind ${step.cited ? 'is-cited' : ''}`}>{step.cited ? 'Citada' : 'Recuperada'}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <button type="button" className="question-trace__clear" onClick={() => { setQuestionTrace([]); setActiveQuestionTraceIndex(-1); setQuestionTraceStatus('idle'); }}>Limpar destaques</button>
+                </section>
+              )}
             </section>
 
             <div className="workspace-grid">
@@ -724,7 +850,7 @@ export function App() {
                     <p className="graph-limit-note" role="status">
                       <AlertTriangle size={12} />
                       <span>
-                        {graph.truncated_nodes && `Nós: ${graph.returned_nodes} de ${graph.total_nodes} correspondentes foram retornados (grafo completo: ${graph.repository_total_nodes}). `}
+                        {graph.truncated_nodes && `Nós: resultados ${graph.offset + 1}–${graph.offset + graph.returned_nodes} de ${graph.total_nodes} correspondentes (grafo completo: ${graph.repository_total_nodes}). Use Próxima para continuar a navegação. `}
                         Relações: {graph.returned_edges} retornadas de {graph.eligible_edges_for_returned_nodes} possíveis entre os nós carregados; o grafo completo possui {graph.repository_total_edges}. Busca e filtros consultam o servidor. Este aviso é sobre o limite desta visualização e não confirma, por si só, ingestão incompleta; confira também os avisos da análise.
                       </span>
                     </p>
@@ -732,7 +858,7 @@ export function App() {
                 </section>
 
                 <section className="rail-section panel activity-panel">
-                  <div className="rail-heading"><span>ATIVIDADE RECENTE</span><Clock3 size={14} /></div>
+                  <div className="rail-heading"><span>ATIVIDADE RECENTE</span><span className={`event-stream-status event-stream-status--${eventStreamStatus}`} role="status">{eventStreamStatus === 'connected' ? 'SSE conectado' : eventStreamStatus === 'reconnecting' ? 'Reconectando · polling ativo' : eventStreamStatus === 'connecting' ? 'Conectando SSE' : eventStreamStatus === 'closed' ? 'Fluxo encerrado' : 'Aguardando fluxo'}</span><Clock3 size={14} /></div>
                   {activities.length ? (
                     <div className="activity-list">
                       {activities.slice(0, 7).map((item) => (
@@ -755,11 +881,37 @@ export function App() {
                 </div>
                 <div className="canvas-frame">
                   {graph ? (
-                    <GraphCanvas graph={graph} filterType={filterType} searchQuery={searchQuery} selectedId={selectedId} onSelect={(id) => setSelectedId(id || null)} />
+                    <GraphCanvas
+                      graph={graph}
+                      filterType={filterType}
+                      searchQuery={searchQuery}
+                      selectedId={selectedId}
+                      onSelect={(id) => setSelectedId(id || null)}
+                      onLoadGraphPage={loadGraphPage}
+                      loadingGraphPage={loadingGraphPage}
+                      highlightedQuestionNodeIds={[...new Set(questionTrace.flatMap((step) => step.node_ids))]}
+                      citedQuestionNodeIds={[...new Set(questionTrace.filter((step) => step.cited).flatMap((step) => step.node_ids))]}
+                      activeQuestionNodeIds={activeQuestionTraceIndex >= 0 ? questionTrace[activeQuestionTraceIndex]?.node_ids ?? [] : []}
+                      highlightedScanNodeIds={[...new Set(analysisPathHistory.flatMap((step) => step.node_ids))]}
+                      activeScanNodeIds={activeAnalysisPath?.node_ids ?? []}
+                    />
                   ) : (
-                    <div className="canvas-wait"><div className="canvas-wait__symbol"><GitBranch size={28} /></div><strong>{isRunning ? 'Preparando as evidências…' : 'Mapa ainda indisponível'}</strong><p>{isRunning ? 'O grafo aparece quando a estrutura está persistida. Nenhum progresso visual é simulado.' : 'A análise não produziu um grafo consultável.'}</p>{isRunning && <LoaderCircle className="spin wait-spinner" size={17} />}</div>
+                    <div className="canvas-wait"><div className="canvas-wait__symbol"><GitBranch size={28} /></div><strong>{isRunning ? 'Preparando as evidências…' : 'Mapa ainda indisponível'}</strong><p>{isRunning ? 'O grafo aparece quando a estrutura está persistida; depois disso, os eventos reais das skills destacam os arquivos inspecionados.' : 'A análise não produziu um grafo consultável.'}</p>{isRunning && <LoaderCircle className="spin wait-spinner" size={17} />}</div>
                   )}
-                  <div className="canvas-footnote"><span>GRAFO ESTÁTICO</span><span>Sem execução · Sem escrita no repositório</span></div>
+                  {activeAnalysisPath && (
+                    <div className="graph-trace-status graph-trace-status--scan" role="status">
+                      <span className="graph-trace-status__dot" />
+                      <div><strong>{isRunning ? 'Varredura determinística em andamento' : 'Último passo registrado da varredura'}</strong><span>{activeAnalysisPath.skill_id} · {activeAnalysisPath.path}</span></div>
+                      <small>passo {activeAnalysisPath.step_number}</small>
+                    </div>
+                  )}
+                  {questionTrace.length > 0 && (
+                    <div className="graph-trace-status graph-trace-status--question" role="status">
+                      <span className="graph-trace-status__dot" />
+                      <div><strong>{askingQuestion ? 'Trilha visual da pergunta' : 'Nós ligados à pergunta'}</strong><span>{askingQuestion ? 'Percorrendo evidências reais antes da resposta do modelo' : `${questionTrace.filter((step) => step.cited).length} evidência(s) citada(s) · ${questionTrace.length} recuperada(s)`}</span></div>
+                    </div>
+                  )}
+                  <div className="canvas-footnote"><span>GRAFO ESTÁTICO</span><span>Trilhas baseadas em eventos e evidências reais · sem execução de código do repositório</span></div>
                 </div>
 
                 <section className="findings-section panel">
@@ -855,7 +1007,7 @@ export function App() {
               </aside>
             </div>
 
-            <div className="workspace-bottom-note"><ShieldCheck size={14} /><span>Este mapa descreve apenas o que foi reconhecido no snapshot fixado. Arquivos ignorados, parsing parcial e limites reduzem a cobertura; não é uma auditoria completa de segurança.</span><button type="button" onClick={() => { setAnalysisId(null); setAnalysis(null); setGraph(null); setFindings([]); setSelectedId(null); setActivities([]); }}><X size={13} /> Fechar análise</button></div>
+            <div className="workspace-bottom-note"><ShieldCheck size={14} /><span>Este mapa descreve apenas o que foi reconhecido no snapshot fixado. Arquivos ignorados, parsing parcial e limites reduzem a cobertura; não é uma auditoria completa de segurança.</span><button type="button" onClick={() => { setAnalysisId(null); setAnalysis(null); setGraph(null); setFindings([]); setSelectedId(null); setActivities([]); setQuestionTrace([]); setActiveQuestionTraceIndex(-1); setAnalysisPathHistory([]); setActiveAnalysisPath(null); scanPathQueueRef.current = []; }}><X size={13} /> Fechar análise</button></div>
           </section>
         )}
       </main>

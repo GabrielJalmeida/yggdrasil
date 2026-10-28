@@ -86,7 +86,7 @@ def test_database_url_credentials_are_flagged_without_exposing_user_or_password(
 def test_provider_token_formats_are_flagged_and_redacted() -> None:
     google_key = "AIza" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r"
     stripe_key = "sk_live_0123456789abcdef0123"
-    slack_token = "xoxb-" + "123456789012-" + "abcdefghijklmnop"
+    slack_token = "xoxb-" + ("1" * 12) + "-" + ("a" * 16)
     source = f"# leaked literals\n{google_key}\n{stripe_key}\n{slack_token}\n"
 
     candidates = detect_secret_candidates(source)
@@ -189,3 +189,35 @@ def test_generic_username_does_not_hide_a_real_looking_url_password() -> None:
     assert candidates[0].category == "url_credential_candidate"
     assert "VeryFakePasswordValue987" not in redacted
     assert 'postgresql://[REDACTED]@localhost/app' in redacted
+
+def test_skill_scan_callback_reports_real_paths_and_skill_ids_without_source_values() -> None:
+    secret = "synthetic_secret_value_12345"
+    raw = f'API_KEY = "{secret}"\n'
+    artifacts = [
+        ArchiveArtifact(
+            path="config.py",
+            size_bytes=len(raw.encode("utf-8")),
+            language="Python",
+            redacted_content=redact_secrets(raw),
+            raw_content=raw,
+        ),
+        ArchiveArtifact(
+            path="tests/test_service.py",
+            size_bytes=28,
+            language="Python",
+            redacted_content="def test_service():\n    assert True\n",
+            raw_content="def test_service():\n    assert True\n",
+        ),
+    ]
+    visited: list[tuple[str, str]] = []
+    findings, warnings = run_initial_skills(
+        artifacts,
+        "a" * 40,
+        ["appsec.secrets-detection", "engineering.test-inventory"],
+        on_file_scanned=lambda path, skill_id: visited.append((path, skill_id)),
+    )
+
+    assert not warnings
+    assert ("config.py", "appsec.secrets-detection") in visited
+    assert ("tests/test_service.py", "engineering.test-inventory") in visited
+    assert secret not in repr(findings)

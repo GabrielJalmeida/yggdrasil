@@ -162,7 +162,7 @@ class GitHubClient:
         self._client.close()
         self._raw_client.close()
 
-    def __enter__(self) -> "GitHubClient":
+    def __enter__(self) -> GitHubClient:
         return self
 
     def __exit__(self, *_args: object) -> None:

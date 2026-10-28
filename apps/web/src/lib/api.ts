@@ -33,6 +33,10 @@ export interface AnalysisView {
     python_parsed: number;
     python_failed: number;
     python_pending: number;
+    eligibility_status_counts?: Record<string, number>;
+    parse_status_counts?: Record<string, number>;
+    assessment?: 'pending' | 'partial' | 'observed';
+    incomplete_reasons?: string[];
   };
   created_at: string;
   started_at: string | null;
@@ -75,6 +79,9 @@ export interface GraphResponse {
   returned_nodes: number;
   returned_edges: number;
   eligible_edges_for_returned_nodes: number;
+  offset: number;
+  page_size: number;
+  has_more_nodes: boolean;
   truncated_nodes: boolean;
   truncated_edges: boolean;
   truncated: boolean;
@@ -124,9 +131,29 @@ export interface QuestionCitation {
   excerpt: string;
 }
 
+export interface QuestionTraceStep {
+  evidence_id: string;
+  rank: number;
+  kind: string;
+  path: string | null;
+  start_line: number | null;
+  end_line: number | null;
+  node_ids: string[];
+  cited: boolean;
+}
+
+export interface AnalysisPathStep {
+  step_number: number;
+  path: string;
+  skill_id: string;
+  node_ids: string[];
+  source: 'deterministic_skill_scan';
+}
+
 export interface QuestionAnswer {
   answer: string;
   citations: QuestionCitation[];
+  retrieval_trace?: QuestionTraceStep[];
   insufficient_evidence: boolean;
   evidence_count: number;
   provider: string;
@@ -149,11 +176,60 @@ export interface NodeDetail {
   message: string | null;
 }
 
+type YggdrasilDesktopWindow = Window & { __YGGDRASIL_API_TOKEN__?: string };
+
+function desktopSessionHeaders(): Record<string, string> {
+  const token = (window as YggdrasilDesktopWindow).__YGGDRASIL_API_TOKEN__;
+  return token ? { 'X-Yggdrasil-Token': token } : {};
+}
+
+async function isDesktopSessionRejected(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false;
+  try {
+    const payload = await response.clone().json() as { detail?: { code?: string } | string };
+    return typeof payload.detail === 'object' && payload.detail?.code === 'DESKTOP_TOKEN_REQUIRED';
+  } catch {
+    return false;
+  }
+}
+
+async function refreshDesktopSessionToken(): Promise<boolean> {
+  try {
+    // The launcher rotates the per-process token when it restarts the API after a
+    // settings change. Bootstrap is deliberately no-store and returns only that token.
+    const response = await fetch('/desktop-bootstrap.js', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) return false;
+    const source = await response.text();
+    const match = source.match(/window\.__YGGDRASIL_API_TOKEN__\s*=\s*"([A-Za-z0-9_-]+)";/);
+    if (!match) return false;
+    (window as YggdrasilDesktopWindow).__YGGDRASIL_API_TOKEN__ = match[1];
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchWithDesktopSessionRetry(path: string, init?: RequestInit): Promise<Response> {
+  const send = () => {
+    const headers = new Headers(init?.headers);
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+    for (const [name, value] of Object.entries(desktopSessionHeaders())) headers.set(name, value);
+    return fetch(path, { ...init, headers });
+  };
+
+  let response = await send();
+  if (await isDesktopSessionRejected(response) && await refreshDesktopSessionToken()) {
+    response = await send();
+  }
+  return response;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  });
+  const response = await fetchWithDesktopSessionRetry(path, init);
   if (!response.ok) {
     let message = `Falha HTTP ${response.status}`;
     try {
@@ -174,8 +250,8 @@ export const api = {
       '/api/v1/analyses', { method: 'POST', body: JSON.stringify(body) },
     ),
   analysis: (id: string) => request<AnalysisView>(`/api/v1/analyses/${id}`),
-  graph: (id: string, options: { nodeType?: string; query?: string } = {}) => {
-    const params = new URLSearchParams({ limit: '2000', edge_limit: '4000' });
+  graph: (id: string, options: { nodeType?: string; query?: string; offset?: number } = {}) => {
+    const params = new URLSearchParams({ limit: '2000', offset: String(options.offset ?? 0), edge_limit: '4000' });
     if (options.nodeType && options.nodeType !== 'all') params.set('node_type', options.nodeType);
     if (options.query?.trim()) params.set('q', options.query.trim());
     return request<GraphResponse>(`/api/v1/analyses/${id}/graph?${params.toString()}`);
@@ -190,6 +266,69 @@ export const api = {
     request<QuestionAnswer>(`/api/v1/analyses/${analysisId}/questions`, {
       method: 'POST', body: JSON.stringify({ question, scope: { node_ids: [], paths: [] } }),
     }),
+  askStream: async (
+    analysisId: string,
+    question: string,
+    onEvent: (eventType: string, payload: Record<string, unknown>) => void,
+  ): Promise<QuestionAnswer> => {
+    const response = await fetchWithDesktopSessionRetry(`/api/v1/analyses/${analysisId}/questions/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body: JSON.stringify({ question, scope: { node_ids: [], paths: [] } }),
+    });
+    if (!response.ok) {
+      let message = `Falha HTTP ${response.status}`;
+      try {
+        const payload = await response.json() as { detail?: { message?: string } | string };
+        if (typeof payload.detail === 'string') message = payload.detail;
+        else if (payload.detail?.message) message = payload.detail.message;
+      } catch { /* Keep HTTP status as the fallback. */ }
+      throw new Error(message);
+    }
+    if (!response.body) throw new Error('O navegador não disponibilizou o fluxo de eventos da pergunta.');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let answer: QuestionAnswer | null = null;
+    const consumeFrame = (frame: string) => {
+      let eventType = 'message';
+      const dataLines: string[] = [];
+      for (const line of frame.split(/\r?\n/)) {
+        if (line.startsWith('event:')) eventType = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+      }
+      if (!dataLines.length) return;
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(dataLines.join('\n')) as Record<string, unknown>; }
+      catch { throw new Error('O fluxo da pergunta retornou um evento inválido.'); }
+      onEvent(eventType, payload);
+      if (eventType === 'question_error') {
+        const message = typeof payload.message === 'string' ? payload.message : 'A pergunta não pôde ser concluída.';
+        throw new Error(message);
+      }
+      if (eventType === 'question_answer') answer = payload as unknown as QuestionAnswer;
+    };
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary = buffer.search(/\r?\n\r?\n/);
+        while (boundary >= 0) {
+          const delimiter = buffer.slice(boundary).match(/^\r?\n\r?\n/)?.[0] ?? '\n\n';
+          consumeFrame(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + delimiter.length);
+          boundary = buffer.search(/\r?\n\r?\n/);
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) consumeFrame(buffer);
+    } finally {
+      reader.releaseLock();
+    }
+    if (!answer) throw new Error('O fluxo terminou sem uma resposta final.');
+    return answer;
+  },
   health: () => request<{ status: string; database: string; version: string; ai_enabled: boolean; ai_provider: string; ai_model: string | null }>('/api/v1/health'),
 };
 

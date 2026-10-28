@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Yggdrasil — Code Knowledge Map</title>
+  <desc id="desc">Dark navy banner with a branching network of connected code nodes and the tagline Understand software through evidence, not guesswork.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#07111F"/>
+      <stop offset="55%" stop-color="#0B202D"/>
+      <stop offset="100%" stop-color="#12383B"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#68DDB1"/>
+      <stop offset="100%" stop-color="#D5F57A"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0%" stop-color="#70E5B8" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#70E5B8" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#C6F4E3" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+    <filter id="softGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="320" rx="24" fill="url(#background)"/>
+  <rect width="1200" height="320" rx="24" fill="url(#grid)"/>
+  <circle cx="982" cy="157" r="230" fill="url(#glow)"/>
+  <path d="M700 320L875 0M800 320L975 0M900 320L1075 0M1000 320L1175 0" stroke="#A8ECD3" stroke-opacity="0.04" stroke-width="1"/>
+  <g font-family="Segoe UI, Inter, Arial, sans-serif">
+    <text x="76" y="103" fill="#B2F5D9" font-size="14" font-weight="700" letter-spacing="4">CODE KNOWLEDGE MAP</text>
+    <text x="72" y="170" fill="#FFFFFF" font-size="62" font-weight="750" letter-spacing="1.4">YGGDRASIL</text>
+    <rect x="76" y="196" width="58" height="4" rx="2" fill="url(#accent)"/>
+    <text x="76" y="235" fill="#D4E6E8" font-size="22" font-weight="400">Understand software through evidence,</text>
+    <text x="76" y="266" fill="#D4E6E8" font-size="22" font-weight="400">not guesswork.</text>
+  </g>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1002 46L1002 93L946 136L946 178L884 226" stroke="#74E1B8" stroke-opacity="0.8" stroke-width="2.2"/>
+    <path d="M1002 93L1064 126L1064 177L1115 211" stroke="#74E1B8" stroke-opacity="0.65" stroke-width="2.2"/>
+    <path d="M946 136L1014 166L1014 216L971 260" stroke="#A4EA9A" stroke-opacity="0.65" stroke-width="2.2"/>
+    <path d="M946 178L899 157L855 180L820 157" stroke="#74E1B8" stroke-opacity="0.55" stroke-width="2.2"/>
+    <path d="M1064 126L1110 101L1145 121" stroke="#A4EA9A" stroke-opacity="0.7" stroke-width="2.2"/>
+    <path d="M884 226L916 267L957 275" stroke="#74E1B8" stroke-opacity="0.6" stroke-width="2.2"/>
+    <path d="M1014 166L1070 145" stroke="#74E1B8" stroke-opacity="0.5" stroke-width="2.2"/>
+  </g>
+  <g filter="url(#softGlow)">
+    <circle cx="1002" cy="46" r="7" fill="#D5F57A"/>
+    <circle cx="1002" cy="93" r="5.5" fill="#70E5B8"/>
+    <circle cx="946" cy="136" r="7" fill="#D5F57A"/>
+    <circle cx="946" cy="178" r="5" fill="#70E5B8"/>
+    <circle cx="884" cy="226" r="6" fill="#70E5B8"/>
+    <circle cx="1064" cy="126" r="6.5" fill="#D5F57A"/>
+    <circle cx="1064" cy="177" r="5" fill="#70E5B8"/>
+    <circle cx="1115" cy="211" r="7" fill="#D5F57A"/>
+    <circle cx="1014" cy="166" r="5" fill="#70E5B8"/>
+    <circle cx="971" cy="260" r="6" fill="#D5F57A"/>
+    <circle cx="820" cy="157" r="5.5" fill="#D5F57A"/>
+    <circle cx="1145" cy="121" r="5.5" fill="#70E5B8"/>
+    <circle cx="957" cy="275" r="4.5" fill="#70E5B8"/>
+    <circle cx="1070" cy="145" r="4.5" fill="#D5F57A"/>
+  </g>
+  <rect x="1" y="1" width="1198" height="318" rx="23" fill="none" stroke="#D8F8EC" stroke-opacity="0.13"/>
+</svg>

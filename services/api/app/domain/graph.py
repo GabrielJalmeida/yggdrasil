@@ -65,7 +65,7 @@ class _Import:
 
 def stable_graph_id(snapshot_id: str, stable_key: str) -> str:
     """Build deterministic IDs inside a snapshot without exposing source code in the ID."""
-    return hashlib.sha256(f"{snapshot_id}:{stable_key}".encode("utf-8")).hexdigest()[:32]
+    return hashlib.sha256(f"{snapshot_id}:{stable_key}".encode()).hexdigest()[:32]
 
 
 def _module_name(path: str) -> str:

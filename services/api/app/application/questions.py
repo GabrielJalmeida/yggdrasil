@@ -6,13 +6,14 @@ from the redacted snapshot already persisted by the static analyzer.
 
 from __future__ import annotations
 
+import ast
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -35,7 +36,7 @@ _STOP_WORDS = {
     "pelo", "pelos", "por", "que", "se", "sem", "ser", "seu", "sua", "the", "this",
     "to", "um", "uma", "umas", "uns", "what", "when", "where", "which", "who", "why",
     "with", "and", "are", "can", "does", "how", "is", "it", "of", "on", "or", "than",
-    "then", "there", "this", "was", "were", "will", "you", "your",
+    "then", "there", "was", "were", "will", "you", "your",
     # Common instruction words add little retrieval value; technical concepts are expanded separately.
     "investigue", "investigar", "especificamente", "identifique", "relacionadas", "relacionados",
     "publicas", "publicos", "entradas", "recebem", "resultados", "produzem", "explique",
@@ -88,7 +89,11 @@ INTENT_GUIDANCE = {
     ),
     "tests": (
         "Priorize arquivos de teste, nomes de testes e componentes relacionados. Diferencie testes "
-        "encontrados de cobertura efetivamente medida; a análise estática não executa os testes do alvo."
+        "encontrados de cobertura efetivamente medida; a análise estática não executa os testes do alvo. "
+        "Ao analisar uma asserção, confira a semântica exata da API usada: unittest.TestCase.assertTrue(expr, msg=None) "
+        "testa apenas a veracidade do primeiro argumento; o segundo argumento posicional é uma mensagem opcional, "
+        "não o valor atual para comparação. Nunca diga que assertTrue compara dois valores. Para igualdade, "
+        "a comparação usual é assertEqual(expected, actual)."
     ),
     "implementation": (
         "Investigue a implementação, não apenas o README. Priorize definições reais de classes, funções e métodos "
@@ -464,6 +469,78 @@ def _repository_profile(
     ])
 
 
+def _unittest_assertion_semantic_note(
+    source_file: SourceFile, query_terms: set[str]
+) -> tuple[int, int, str] | None:
+    """Describe a relevant two-argument unittest assertTrue call from AST, without executing tests."""
+    if _path_role(source_file.path) != "test" or not source_file.redacted_content:
+        return None
+    try:
+        tree = ast.parse(source_file.redacted_content)
+    except (SyntaxError, ValueError):
+        return None
+
+    unittest_names = {"unittest"}
+    testcase_names: set[str] = set()
+    for item in ast.walk(tree):
+        if isinstance(item, ast.Import):
+            for alias in item.names:
+                if alias.name == "unittest":
+                    unittest_names.add(alias.asname or alias.name)
+        elif isinstance(item, ast.ImportFrom) and item.module in {"unittest", "unittest.case"}:
+            for alias in item.names:
+                if alias.name == "TestCase":
+                    testcase_names.add(alias.asname or alias.name)
+
+    def inherits_unittest_testcase(class_node: ast.ClassDef) -> bool:
+        for base in class_node.bases:
+            if isinstance(base, ast.Name) and base.id in testcase_names:
+                return True
+            if (
+                isinstance(base, ast.Attribute)
+                and base.attr == "TestCase"
+                and isinstance(base.value, ast.Name)
+                and base.value.id in unittest_names
+            ):
+                return True
+        return False
+
+    content = source_file.redacted_content
+    for class_node in (item for item in ast.walk(tree) if isinstance(item, ast.ClassDef)):
+        if not inherits_unittest_testcase(class_node):
+            continue
+        # A local override can change the inherited API contract, so avoid stating the
+        # standard-library semantics if the class defines its own assertTrue method.
+        if any(
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "assertTrue"
+            for item in class_node.body
+        ):
+            continue
+        calls = [
+            item for item in ast.walk(class_node)
+            if isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and item.func.attr == "assertTrue"
+            and len(item.args) == 2
+        ]
+        calls.sort(key=lambda item: (item.lineno, item.col_offset))
+        for call in calls:
+            call_text = ast.get_source_segment(content, call) or ""
+            if not call_text or _score(query_terms, call_text) <= 0:
+                continue
+            note = (
+                "Nota determinística de análise estática do Yggdrasil — interpretação da API padrão, não texto do repositório: "
+                "a chamada está dentro de uma classe que herda de unittest.TestCase e não define seu próprio assertTrue. "
+                "A assinatura padrão é assertTrue(expr, msg=None): o primeiro argumento é testado por truthiness; "
+                "o segundo argumento posicional é uma mensagem opcional de falha, não um valor atual a comparar. "
+                "Portanto, esta chamada não testa igualdade entre os dois argumentos. Para verificar igualdade, use "
+                "assertEqual(expected, actual). O Yggdrasil não executou o teste do repositório.\n"
+                f"Chamada observada em {source_file.path}:{call.lineno}: {call_text}"
+            )
+            return call.lineno, getattr(call, "end_lineno", None) or call.lineno, note
+    return None
+
+
 def retrieve_evidence(
     db: Session,
     run: AnalysisRun,
@@ -586,14 +663,22 @@ def retrieve_evidence(
         for source_file in source_files:
             role_files.setdefault(_path_role(source_file.path), []).append(source_file)
 
-        def curated_file_priority(item: SourceFile) -> tuple[int, int, int, str]:
+        def curated_file_priority(item: SourceFile) -> tuple[int, int, float, int, str]:
             path = item.path.replace("\\", "/")
             name = path.rsplit("/", 1)[-1].casefold()
             root_penalty = path.count("/")
             lock_penalty = int("lock" in name or name.endswith(".lock"))
             if question_intent == "dependencies":
                 lock_penalty = 0
-            return lock_penalty, root_penalty, len(path), path.casefold()
+
+            # Keep the curated first pass diverse, but select the most relevant files within
+            # each role instead of taking the first paths alphabetically. This matters when a
+            # repository contains many test files or guides: a query about LunarDate should not
+            # spend its test/documentation slots on unrelated files merely because they sort first.
+            path_relevance = _score(query_terms, path, path)
+            content_relevance = _score(query_terms, (item.redacted_content or "")[:12000], path)
+            relevance = path_relevance * 3.0 + content_relevance
+            return lock_penalty, root_penalty, -relevance, len(path), path.casefold()
         for role in sorted(role_rank, key=lambda item: role_rank.get(item, 99)):
             quota = {"documentation": 2, "manifest": 2, "entrypoint": 2, "configuration": 2, "test": 2, "source_code": 2}.get(role, 1)
             if role not in role_rank:
@@ -612,12 +697,34 @@ def retrieve_evidence(
                     max_lines, max_chars = 65, 2300
                 elif role == "test":
                     max_lines, max_chars = 55, 2000
-                excerpt_info = _excerpt(source_file, max_chars=max_chars, max_lines=max_lines)
+                excerpt_info = None
+                # For test-intent questions, rank chunks before selecting a snippet.
+                # A header-only excerpt can stop immediately before the assertion being asked about.
+                if role == "test" and question_intent == "tests":
+                    ranked_test_chunks = _scored_code_chunks(source_file, query_terms, intent=question_intent)
+                    if ranked_test_chunks:
+                        _chunk_score, chunk_start, chunk_end, chunk_text = ranked_test_chunks[0]
+                        excerpt_info = (chunk_start, chunk_end, chunk_text)
+                if excerpt_info is None:
+                    excerpt_info = _excerpt(source_file, max_chars=max_chars, max_lines=max_lines)
                 if excerpt_info:
                     start_line, end_line, excerpt = excerpt_info
                     bonus = 20.0 - role_rank.get(role, 8)
                     # Prioritize lexical matches within the same role when multiple files exist.
                     bonus += _score(query_terms, excerpt, source_file.path)
+                    if (
+                        question_intent == "tests"
+                        and role == "test"
+                        and not any(item.kind == "static_analysis_note" for item in candidates)
+                    ):
+                        note_info = _unittest_assertion_semantic_note(source_file, query_terms)
+                        if note_info is not None:
+                            note_start, note_end, note_excerpt = note_info
+                            add_evidence(
+                                kind="static_analysis_note", path=source_file.path,
+                                start_line=note_start, end_line=note_end,
+                                excerpt=note_excerpt, score=100.0,
+                            )
                     add_evidence(
                         kind="project_documentation" if role == "documentation" else role,
                         path=source_file.path, start_line=start_line, end_line=end_line,
@@ -737,17 +844,42 @@ def retrieve_evidence(
                 if _path_role(source.path) in {"source_code", "entrypoint"}:
                     implementation_anchor_paths.add(source.path)
 
-        # Bring in a relevant documentation passage based on matching lines, not only the first README page.
+        # Bring in documentation aligned with the actual implementation symbols. The original
+        # question may describe behavior in Portuguese without naming the method, so use symbols
+        # discovered in the selected implementation as additional query terms. This is still
+        # lexical/structural retrieval: no external search or model call is involved.
+        source_identifier_terms: set[str] = set()
+        for label in matched_symbol_labels:
+            source_identifier_terms.update(_terms(label))
+        for path in implementation_anchor_paths:
+            filename = path.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            source_identifier_terms.update(_terms(filename))
+        documentation_query_terms = query_terms | source_identifier_terms
+        folded_question = _fold(question)
+        asks_for_documented_example = any(
+            marker in folded_question
+            for marker in ("documentado", "documentada", "documentacao", "exemplo", "exemplos", "documented", "example", "examples")
+        )
+
         docs_ranked: list[tuple[float, SourceFile, tuple[int, int, str]]] = []
         for source in source_files:
             if _path_role(source.path) != "documentation" or not source.redacted_content:
                 continue
-            chunks = _scored_code_chunks(source, query_terms, intent=question_intent)
+            chunks = _scored_code_chunks(source, documentation_query_terms, intent=question_intent)
             if chunks:
                 score, start, end, excerpt = chunks[0]
+                # Exact implementation identifiers in a document are stronger evidence than
+                # generic calendar vocabulary. A document that contains the selected method and
+                # an example should outrank a nearby guide that merely discusses the same domain.
+                score += 2.0 * _score(source_identifier_terms, excerpt, source.path)
+                if asks_for_documented_example and source_identifier_terms & _terms(excerpt + " " + source.path):
+                    score += 8.0
                 docs_ranked.append((score, source, (start, end, excerpt)))
         docs_ranked.sort(key=lambda item: (-item[0], item[1].path.casefold()))
-        for score, source, (start, end, excerpt) in docs_ranked[:1]:
+        documentation_quota = 2 if asks_for_documented_example else 1
+        for score, source, (start, end, excerpt) in docs_ranked[:documentation_quota]:
+            # Keep one slot in reserve for evidence from other roles. Documentation/example
+            # questions can use two targeted passages if the context budget permits.
             if len(candidates) >= max_evidence - 1 or used_chars >= context_char_budget:
                 break
             add_evidence(kind="project_documentation", path=source.path, start_line=start, end_line=end, excerpt=excerpt, score=score)
@@ -818,7 +950,7 @@ def retrieve_evidence(
     selected_chunks.extend(second_pass_chunks)
     relation_reserve = 2 if question_intent in {"overview", "architecture", "flow", "implementation"} and not scoped else 0
     max_before_relations = max(1, max_evidence - relation_reserve)
-    for score, path, start_line, end_line, excerpt, source_file in selected_chunks:
+    for score, path, start_line, end_line, excerpt, _source_file in selected_chunks:
         if len(candidates) >= max_before_relations or used_chars >= context_char_budget:
             break
         add_evidence(

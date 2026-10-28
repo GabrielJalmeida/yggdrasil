@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import settings
@@ -40,7 +40,7 @@ def generate_markdown(
         (node for node in nodes if node.node_type == "endpoint"),
         key=lambda item: (item.source_file_id or "", item.start_line or 0),
     )
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     progress = getattr(analysis, "progress_metadata", {}) or {}
     ingestion_method = progress.get("ingestion_method", "archive")
     ingestion_label = (

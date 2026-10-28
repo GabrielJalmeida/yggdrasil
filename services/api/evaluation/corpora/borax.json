@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "corpus_id": "borax-lunar-rag",
+  "version": "0.1.0",
+  "description": "Corpus inicial para recuperação de implementação, testes, visão geral e empacotamento de kinegratii/borax. Os caminhos são rótulos humanos iniciais e devem ser revistos quando o snapshot mudar.",
+  "target_repository": "kinegratii/borax",
+  "cases": [
+    {
+      "id": "lunar-conversion-implementation",
+      "question": "Investigue a implementação da conversão entre data solar e data lunar no Borax.",
+      "expected_intent": "implementation",
+      "expected_paths": [
+        "borax/calendars/lunardate.py",
+        "tests/test_lunardate.py"
+      ],
+      "answerability": "answerable",
+      "notes": "Priorizar a implementação e os testes que demonstram a conversão; não basta recuperar apenas o README."
+    },
+    {
+      "id": "lunar-conversion-example",
+      "question": "Mostre um exemplo documentado de conversão de uma data solar para LunarDate e a implementação correspondente.",
+      "expected_intent": "implementation",
+      "expected_paths": [
+        "docs/guides/lunardate.md",
+        "borax/calendars/lunardate.py"
+      ],
+      "answerability": "answerable",
+      "notes": "Caso de exemplo: a documentação mostra uma chamada concreta; a implementação precisa ser recuperada para validar o comportamento."
+    },
+
+    {
+      "id": "lunar-conversion-tests",
+      "question": "Quais testes exercitam a criação e a conversão de datas lunares?",
+      "expected_intent": "tests",
+      "expected_paths": [
+        "tests/test_lunardate.py"
+      ],
+      "answerability": "answerable",
+      "notes": "O inventário de testes não deve ser confundido com cobertura medida."
+    },
+    {
+      "id": "borax-overview",
+      "question": "Do que se trata o projeto Borax e quais funcionalidades principais ele documenta?",
+      "expected_intent": "overview",
+      "expected_paths": [
+        "README.md"
+      ],
+      "answerability": "answerable",
+      "notes": "Esta pergunta mede recuperação documental; alegações funcionais devem ser conferidas no código."
+    },
+    {
+      "id": "lunar-public-api",
+      "question": "Investigue as funções públicas exportadas pelo módulo lunardate e onde são definidas.",
+      "expected_intent": "implementation",
+      "expected_paths": [
+        "borax/calendars/lunardate.py"
+      ],
+      "answerability": "answerable",
+      "notes": "O campo __all__ é uma evidência explícita de exportações declaradas."
+    },
+    {
+      "id": "package-setup",
+      "question": "Quais dependências e metadados de empacotamento são declarados no projeto?",
+      "expected_intent": "dependencies",
+      "expected_paths": [
+        "setup.py"
+      ],
+      "answerability": "answerable",
+      "notes": "Pergunta sobre metadados do empacotamento; o recuperador deve priorizar arquivos de manifesto/configuração."
+    },
+    {
+      "id": "absence-of-security-proof",
+      "question": "A análise estática prova que o Borax está livre de todas as vulnerabilidades?",
+      "expected_intent": "security",
+      "expected_paths": [],
+      "answerability": "insufficient_evidence",
+      "notes": "O resultado correto exige abstinência/limitação explícita. O harness atual não mede a resposta do modelo; este caso fica fora das métricas de recuperação e serve como rótulo para futura avaliação de geração."
+    }
+  ]
+}

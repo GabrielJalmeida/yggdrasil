@@ -51,7 +51,7 @@ function compareNodes(a: GraphNode, b: GraphNode): number {
  * The initial canvas is an overview, not a dump of every symbol. Search and
  * type filters deliberately switch to a more detailed view (up to 500 nodes).
  */
-export function pickVisibleNodes(nodes: GraphNode[], filterType: string, query: string): GraphNode[] {
+export function pickVisibleNodes(nodes: GraphNode[], filterType: string, query: string, pageOffset = 0, highlightedNodeIds: string[] = []): GraphNode[] {
   const orderedNodes = [...nodes].sort(compareNodes);
   const needle = query.trim().toLowerCase();
   if (filterType !== 'all' || needle) {
@@ -59,7 +59,7 @@ export function pickVisibleNodes(nodes: GraphNode[], filterType: string, query: 
       const typeMatches = filterType === 'all' || node.type === filterType;
       const textMatches = !needle || `${node.label} ${node.path ?? ''} ${node.stable_key}`.toLowerCase().includes(needle);
       return typeMatches && textMatches;
-    }).slice(0, 500);
+    }).slice(Math.max(0, pageOffset), Math.max(0, pageOffset) + 500);
   }
 
   const grouped = new Map<string, GraphNode[]>();
@@ -86,6 +86,18 @@ export function pickVisibleNodes(nodes: GraphNode[], filterType: string, query: 
     if (!selectedIds.has(node.id) && contextTypes.has(node.type)) {
       selected.push(node);
       selectedIds.add(node.id);
+    }
+  }
+
+  // In overview mode, include evidence/scan nodes even when they are beyond the
+  // summary caps. Filters still remain strict and do not silently inject unrelated nodes.
+  if (filterType === 'all' && !query.trim()) {
+    const highlighted = new Set(highlightedNodeIds);
+    for (const node of orderedNodes) {
+      if (highlighted.has(node.id) && !selectedIds.has(node.id)) {
+        selected.push(node);
+        selectedIds.add(node.id);
+      }
     }
   }
 

@@ -14,7 +14,6 @@ import httpx
 
 from app.config import settings
 
-
 logger = logging.getLogger("yggdrasil.ai")
 TRANSIENT_UPSTREAM_STATUS_CODES = {500, 502, 503, 504}
 
@@ -242,14 +241,19 @@ def generate_answer(
         "evidências e identifique relações inferidas como incertas. Para AppSec, nunca reproduza valores "
         "redigidos e distinga candidato a segredo, achado estático e vulnerabilidade confirmada. Para "
         "dependências, cite apenas pacotes/versões efetivamente observados. Para testes, não infira "
-        "cobertura executada a partir da presença de arquivos de teste. Se faltarem elos, houver "
+        "cobertura executada a partir da presença de arquivos de teste. Ao explicar unittest.TestCase.assertTrue(expr, msg=None), "
+        "afirme que só o primeiro argumento é testado por truthiness e que o segundo argumento é uma mensagem opcional, "
+        "não um valor esperado/atual; não diga que assertTrue compara dois valores. Prefira a nota determinística de "
+        "semântica quando ela estiver entre as evidências. Se faltarem elos, houver "
         "contradição ou a seleção de contexto for estreita, declare explicitamente a lacuna. "
         "Não confunda a existência de citações com prova de que a conclusão está correta. Não invente "
         "caminhos, linhas, símbolos, relações, versões nem funcionalidades. Cada afirmação técnica "
-        "importante deve ser sustentada por uma ou mais evidências E#; os IDs citados devem existir na "
-        "lista recebida. Se nenhuma evidência sustentar a conclusão principal, marque "
+        "importante deve usar marcadores de evidência entre colchetes, por exemplo [E2], após a "
+        "afirmação sustentada. Grupos separados por vírgula, como [E2, E3], também são válidos. "
+        "Use apenas IDs existentes na lista recebida; nunca escreva o "
+        "placeholder literal E# nem formatos como E#E2. Se nenhuma evidência sustentar a conclusão principal, marque "
         "insufficient_evidence=true. Nunca declare ausência de vulnerabilidades com base em análise "
-        "parcial. Devolva apenas JSON com as chaves answer (string), citation_ids (lista de IDs E#) e "
+        "parcial. Devolva apenas JSON com as chaves answer (string), citation_ids (lista de IDs existentes, como E2) e "
         "insufficient_evidence (boolean). Mantenha a resposta direta; para perguntas amplas, organize "
         "em resumo, componentes observados e limitações, com até 250 palavras."
     )
@@ -271,8 +275,8 @@ def generate_answer(
         thinking_level = settings.ai_reasoning_effort.upper()
         if thinking_level not in {"LOW", "MEDIUM", "HIGH"}:
             thinking_level = "LOW"
-        # Use Google's native generateContent endpoint for Gemini 3.8. This avoids relying on
-        # compatibility-layer mappings for structured output and thinking configuration.
+        # Use Google's native generateContent endpoint for Gemini. This sends structured-output
+        # and reasoning settings without relying on OpenAI-compatibility-layer mappings.
         request_url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{quote(settings.ai_model, safe='')}:generateContent"

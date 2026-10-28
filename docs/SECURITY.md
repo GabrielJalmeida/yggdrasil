@@ -35,3 +35,11 @@ O backend recebe código público de terceiros, processa arquivos compactados ou
 ## Uso seguro
 
 Execute localmente e mantenha as portas vinculadas ao loopback. Não use credenciais de produção no arquivo `.env`. Trate achados como pendentes de revisão. Não conclua que arquivos ignorados foram revisados ou que a ausência de achados prova ausência de vulnerabilidades.
+
+## Distribuição desktop para Windows
+
+- O executável usa uma porta aleatória vinculada a `127.0.0.1`, não `0.0.0.0`. A API do modo desktop exige `X-Yggdrasil-Token` aleatório por processo em todas as rotas `/api/`. O token é carregado por uma resposta JavaScript da própria origem com `Cache-Control: no-store`; ele não é colocado em query string nem persistido em arquivo.
+- A chave de IA é protegida com Windows DPAPI para o usuário que a configurou. O arquivo `settings.json` contém apenas as opções não secretas; a chave não é adicionada ao ZIP de distribuição nem enviada para o frontend web. O processo backend precisa descriptografar a chave para fazer chamadas ao provedor, portanto ela existe em memória/ambiente do processo enquanto a IA está habilitada.
+- DPAPI ajuda a proteger o arquivo em repouso, mas não é defesa contra malware, administrador ou outro processo com capacidade de inspecionar a sessão do mesmo usuário. A chave protegida não deve ser considerada portável entre usuários/máquinas.
+- O pacote de release é construído a partir de uma pasta de staging limpa, sem copiar o repositório inteiro. O verificador do ZIP rejeita `.env`, bancos, logs, `settings.json`, `ai-key.dpapi`, caches e artefatos de desenvolvimento.
+- Estas garantias se referem ao inicializador desktop empacotado. O modo de desenvolvimento com Docker mantém os controles descritos no restante deste documento e não passa a exigir o token de desktop.

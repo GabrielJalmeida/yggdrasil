@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "corpus_id": "borax-answer-quality-review",
+  "version": "0.1.0",
+  "target_repository": "kinegratii/borax",
+  "snapshot_commit": "01cbbbf7ce33ee22d23c462c525d07e1320e67a7",
+  "evaluation_mode": "manual_review",
+  "description": "Casos humanos para revisar a correção de respostas geradas. Este arquivo não é consumido pelo avaliador automático de recuperação.",
+  "cases": [
+    {
+      "id": "lunar-conversion-explanation",
+      "question": "Explique como o Borax converte uma data solar para uma data lunar. Cite implementação, testes e um exemplo documentado.",
+      "answerability": "answerable",
+      "expected_paths": [
+        "borax/calendars/lunardate.py",
+        "tests/test_lunardate.py",
+        "docs/guides/lunardate.md"
+      ],
+      "expected_facts": [
+        "LunarDate.from_solar_date(year, month, day) cria uma datetime.date e encaminha para from_solar.",
+        "from_solar calcula um offset em relação a MIN_SOLAR_DATE e usa offset2ymdl para obter ano, mês, dia e indicador de mês intercalar.",
+        "docs/guides/lunardate.md contém um exemplo de LunarDate.from_solar_date(2018, 8, 11) que resulta em LunarDate(2018, 7, 1, 0).",
+        "tests/test_lunardate.py contém test_convert_datetime, que exercita conversão e limites de datas."
+      ],
+      "must_not_claim": [
+        "Não afirmar que o guia não contém exemplo se docs/guides/lunardate.md foi recuperado ou está no inventário disponível.",
+        "Não afirmar que todas as conversões ou todos os casos de borda foram comprovados por um único teste."
+      ]
+    },
+    {
+      "id": "lunar-test-assertion-semantics",
+      "question": "O que o teste test_convert_datetime comprova sobre a conversão para LunarDate(2033, 10, 1, 0)?",
+      "answerability": "answerable_with_test_defect",
+      "expected_paths": [
+        "tests/test_lunardate.py"
+      ],
+      "expected_facts": [
+        "O teste calcula dt2 com LunarDate.from_solar_date(2033, 10, 23).",
+        "A asserção atual usa self.assertTrue(LunarDate(2033, 10, 1, 0), dt2).",
+        "Em unittest, o primeiro argumento de assertTrue é a expressão testada e o segundo é uma mensagem opcional; portanto, essa linha não compara dt2 com o valor esperado.",
+        "Uma comparação entre os valores deveria usar self.assertEqual(expected, actual)."
+      ],
+      "must_not_claim": [
+        "Não dizer que a asserção atual verifica a igualdade entre dt2 e LunarDate(2033, 10, 1, 0).",
+        "Não atribuir ao Yggdrasil a execução dos testes do projeto-alvo; ele faz análise estática e recuperação de texto."
+      ]
+    },
+    {
+      "id": "static-analysis-security-proof",
+      "question": "A análise estática do Yggdrasil prova que o Borax está livre de todas as vulnerabilidades?",
+      "answerability": "insufficient_evidence",
+      "expected_paths": [],
+      "expected_facts": [
+        "A análise estática não prova ausência de vulnerabilidades.",
+        "A resposta deve explicar o escopo e as limitações da análise disponível e recomendar revisão/testes apropriados quando necessário."
+      ],
+      "must_not_claim": [
+        "Não declarar que o projeto está seguro ou livre de vulnerabilidades porque nenhum achado foi reportado."
+      ]
+    },
+    {
+      "id": "package-metadata",
+      "question": "Quais dependências e metadados de empacotamento são declarados pelo Borax?",
+      "answerability": "answerable",
+      "expected_paths": [
+        "setup.py",
+        "pyproject.toml",
+        "requirements_dev.txt"
+      ],
+      "expected_facts": [
+        "Priorizar manifestos e arquivos de configuração de dependências.",
+        "Distinguir dependências do pacote e dependências de desenvolvimento.",
+        "Não inferir vulnerabilidades somente a partir da existência de uma dependência ou de uma versão observada."
+      ],
+      "must_not_claim": [
+        "Não apresentar uma lista de dependências como prova de vulnerabilidade sem fonte e versão verificadas."
+      ]
+    }
+  ]
+}

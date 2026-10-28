@@ -1,0 +1,49 @@
+{
+  "corpus_id": "yggdrasil-skill-quality",
+  "version": "0.1.0",
+  "description": "Casos determinísticos para validar contratos AppSec e inventário de testes. Valores são sintéticos.",
+  "cases": [
+    {
+      "id": "appsec-literal-key-positive",
+      "skill_ids": ["appsec.secrets-detection"],
+      "expected": "finding",
+      "files": [{"path": "config.py", "content": "API_KEY = \"top_secret_value_12345\"\n"}]
+    },
+    {
+      "id": "appsec-env-reference-negative",
+      "skill_ids": ["appsec.secrets-detection"],
+      "expected": "clean",
+      "files": [{"path": "config.py", "content": "import os\nAPI_KEY = os.getenv(\"SERVICE_API_KEY\")\n"}]
+    },
+    {
+      "id": "appsec-placeholder-negative",
+      "skill_ids": ["appsec.secrets-detection"],
+      "expected": "clean",
+      "files": [{"path": ".env.example", "content": "API_KEY=your-api-key-here\nPASSWORD=change_me\n"}]
+    },
+    {
+      "id": "appsec-placeholder-like-ambiguous",
+      "skill_ids": ["appsec.secrets-detection"],
+      "expected": "review_only",
+      "files": [{"path": "config.py", "content": "API_KEY = \"sampleRealSecret123\"\n"}]
+    },
+    {
+      "id": "quality-conventional-test-file-positive",
+      "skill_ids": ["engineering.test-inventory"],
+      "expected": "tests_recognized",
+      "files": [
+        {"path": "app/service.py", "content": "def calculate(value):\n    return value + 1\n"},
+        {"path": "tests/test_service.py", "content": "def test_calculate():\n    assert True\n"}
+      ]
+    },
+    {
+      "id": "quality-nonstandard-test-location-ambiguous",
+      "skill_ids": ["engineering.test-inventory"],
+      "expected": "test_inventory_review",
+      "files": [
+        {"path": "app/service.py", "content": "def calculate(value):\n    return value + 1\n"},
+        {"path": "specs/check_service.py", "content": "def test_calculate():\n    assert True\n"}
+      ]
+    }
+  ]
+}

@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -22,7 +22,7 @@ from app.db import SessionLocal
 from app.domain.graph import GraphBuildResult, build_graph, stable_graph_id
 from app.domain.skills import FindingData, run_initial_skills
 from app.infrastructure.archive import ArchiveArtifact, inspect_archive, inspect_github_tree
-from app.infrastructure.github import GitHubClient, GitHubError, RepositoryAddress, parse_github_url
+from app.infrastructure.github import GitHubClient, GitHubError, RepositoryAddress
 from app.models import (
     AnalysisEvent,
     AnalysisRun,
@@ -400,7 +400,7 @@ def run_analysis(analysis_id: str) -> None:
         if repository is None:
             raise RuntimeError("analysis repository record missing")
 
-        run.started_at = datetime.now(timezone.utc)
+        run.started_at = datetime.now(UTC)
         current_stage = "fetching_repository"
         _publish(
             db,
@@ -570,10 +570,46 @@ def run_analysis(analysis_id: str) -> None:
         current_stage = "running_skills"
         _emit(db, run, "skills_started", {"skills": run.configuration.get("skills", [])})
         db.commit()
+        # Map graph nodes back to source paths so the UI can highlight only nodes that
+        # really belong to the file currently inspected by a deterministic skill.
+        scan_nodes_by_path: dict[str, list[tuple[str, str, int | None]]] = {}
+        for graph_node in graph.nodes:
+            persisted_id = node_ids.get(graph_node.stable_key)
+            if persisted_id and graph_node.source_path:
+                scan_nodes_by_path.setdefault(graph_node.source_path, []).append(
+                    (persisted_id, graph_node.node_type, graph_node.start_line)
+                )
+        scan_sequence = 0
+
+        def publish_skill_scan_step(path: str, skill_id: str) -> None:
+            nonlocal scan_sequence
+            scan_sequence += 1
+            path_nodes = sorted(
+                scan_nodes_by_path.get(path, []),
+                key=lambda item: (0 if item[1] == "file" else 1, item[2] or 0, item[1]),
+            )
+            _emit(
+                db,
+                run,
+                "analysis_path_step",
+                {
+                    "step_number": scan_sequence,
+                    "path": path,
+                    "skill_id": skill_id,
+                    "node_ids": list(dict.fromkeys(item[0] for item in path_nodes))[:10],
+                    "source": "deterministic_skill_scan",
+                },
+            )
+            # Commit the first event immediately, then batches of ten, so short analyses show progress
+            # early without creating a transaction for every file. The final skills_completed commit flushes any tail.
+            if scan_sequence == 1 or scan_sequence % 10 == 0:
+                db.commit()
+
         findings_data, skill_warnings = run_initial_skills(
             archive_result.files,
             resolved.commit_sha,
             run.configuration.get("skills"),
+            on_file_scanned=publish_skill_scan_step,
         )
         warnings.extend(skill_warnings)
         # Raw text exists only in memory for the scan; it is not stored in the database.
@@ -607,7 +643,7 @@ def run_analysis(analysis_id: str) -> None:
         current_stage = "finalizing_analysis"
         final_status = "completed_with_warnings" if warnings else "completed"
         run.warning_summary = list(dict.fromkeys(warnings))[:50]
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.now(UTC)
         _publish(
             db,
             run,
@@ -632,7 +668,7 @@ def run_analysis(analysis_id: str) -> None:
             run.stage = "failed"
             run.error_code = exc.code
             run.warning_summary = [exc.message]
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             _emit(db, run, "analysis_failed", {"error_code": exc.code, "message": exc.message})
             db.commit()
     except Exception as exc:  # Keep details out of API responses and never log source content.
@@ -658,7 +694,7 @@ def run_analysis(analysis_id: str) -> None:
             run.stage = "failed"
             run.error_code = "INTERNAL_ANALYSIS_ERROR"
             run.warning_summary = ["A análise encontrou uma falha interna. Consulte os logs locais pelo ID da análise."]
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             _emit(db, run, "analysis_failed", {
                 "error_code": run.error_code,
                 "message": "A análise encontrou uma falha interna.",

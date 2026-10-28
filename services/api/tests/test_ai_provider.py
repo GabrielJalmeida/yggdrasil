@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+
 import httpx
 import pytest
 
@@ -64,6 +65,12 @@ def test_provider_sends_only_supplied_evidence_and_parses_structured_answer(monk
     assert seen["authorization"] == "Bearer provider-secret-key-for-test"
     assert seen["model"] == "test-model"
     assert "não confiável" in str(seen["system"])
+    assert "unittest.TestCase.assertTrue(expr, msg=None)" in str(seen["system"])
+    assert "Prefira a nota determinística de semântica" in str(seen["system"])
+    assert "marcadores de evidência entre colchetes" in str(seen["system"])
+    assert "Use apenas IDs existentes na lista recebida" in str(seen["system"])
+    assert "nunca escreva o placeholder literal E#" in str(seen["system"])
+    assert "Grupos separados por vírgula, como [E2, E3], também são válidos." in str(seen["system"])
     assert seen["response_format"] == {"type": "json_object"}
     assert seen["max_completion_tokens"] == 1400
     assert "def calculate" in str(seen["user"])
